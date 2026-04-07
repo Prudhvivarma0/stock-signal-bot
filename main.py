@@ -63,18 +63,26 @@ def launch_dashboard():
         [sys.executable, "-m", "streamlit", "run",
          str(BASE_DIR / "dashboard.py"),
          "--server.port", "8501",
-         "--server.headless", "false",
+         "--server.headless", "true",   # must be true in subprocess
          "--server.runOnSave", "false",
          "--browser.gatherUsageStats", "false"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=open(BASE_DIR / "logs" / "dashboard.log", "w"),
+        stderr=subprocess.STDOUT,
     )
     log.info("Dashboard PID: %d — http://localhost:8501", proc.pid)
-    # Open browser after short delay for server to start
-    time.sleep(3)
+    # Wait for Streamlit to bind then open browser
+    for _ in range(15):
+        time.sleep(1)
+        try:
+            import urllib.request
+            urllib.request.urlopen("http://localhost:8501/_stcore/health", timeout=1)
+            break
+        except Exception:
+            continue
     try:
         import webbrowser
         webbrowser.open("http://localhost:8501")
+        log.info("Browser opened at http://localhost:8501")
     except Exception:
         pass
     return proc

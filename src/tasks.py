@@ -4,6 +4,14 @@ from crewai import Task
 from src import agents as ag
 
 
+SIGNAL_FORMAT = (
+    "\n\nReturn your output as JSON with these fields at minimum:\n"
+    '{"signal": "BULLISH|BEARISH|NEUTRAL", "confidence": 0-100, '
+    '"score": -1.0 to 1.0, "flags": [], "reasoning": "..."}\n'
+    "Every claim must cite its data source."
+)
+
+
 def fundamentals_task(ticker: str, holding: dict = None) -> Task:
     holding_context = ""
     exchange = "US"
@@ -38,7 +46,8 @@ def fundamentals_task(ticker: str, holding: dict = None) -> Task:
             "Use fred_macro for current interest rate environment.\n\n"
             "Return a JSON with: fundamental_score (-1 to 1), valuation (cheap/fair/expensive), "
             "financial_health (strong/mixed/weak), insider_signal (bullish/neutral/bearish), "
-            "key_metrics (dict), trend_direction, flags (list), reasoning (string)."
+            "key_metrics (dict), trend_direction, flags (list), reasoning (string), "
+            "signal (BULLISH/BEARISH/NEUTRAL), confidence (0-100)."
         ),
         expected_output=(
             "JSON object with fundamental_score, valuation, financial_health, insider_signal, "
@@ -179,6 +188,60 @@ def alternative_data_task(ticker: str, company_name: str = "") -> Task:
     )
 
 
+def risk_manager_task(
+    ticker: str,
+    holding: dict,
+    portfolio: dict,
+    technical_result: str,
+    fundamentals_result: str,
+    bull_case: str,
+    bear_case: str,
+) -> Task:
+    budget = portfolio.get("budget_usd", 0)
+    total_holdings = len(portfolio.get("holdings", []))
+    is_holding = bool(holding and holding.get("entry_price"))
+    shares = holding.get("shares", 0) if holding else 0
+    entry = holding.get("entry_price", 0) if holding else 0
+    stop_pct = holding.get("stop_loss_pct", 8) if holding else 8
+    current_exposure = shares * entry if is_holding else 0
+
+    return Task(
+        description=(
+            f"Perform risk analysis for {ticker}.\n\n"
+            f"Portfolio context:\n"
+            f"- Total budget: ${budget:,}\n"
+            f"- Number of holdings: {total_holdings}\n"
+            f"- Current {ticker} exposure: ${current_exposure:,.2f}\n"
+            f"- Stop loss set at: {stop_pct}%\n\n"
+            f"Technical data:\n{technical_result[:500]}\n\n"
+            f"Fundamentals:\n{fundamentals_result[:400]}\n\n"
+            f"Bull case:\n{bull_case[:400]}\n\n"
+            f"Bear case:\n{bear_case[:400]}\n\n"
+            "Calculate and return a JSON risk assessment:\n"
+            "{\n"
+            '  "action": "BUY|SELL|HOLD|ADD|REDUCE",\n'
+            '  "confidence": 0-100,\n'
+            '  "position_size_pct": percentage of budget (0-20),\n'
+            '  "position_size_usd": dollar amount,\n'
+            '  "max_loss_usd": maximum acceptable loss,\n'
+            '  "stop_loss_price": calculated stop price,\n'
+            '  "risk_reward_ratio": estimated R:R,\n'
+            '  "portfolio_heat": current total risk exposure as % of budget,\n'
+            '  "kelly_fraction": kelly criterion position size (be conservative, use half-kelly),\n'
+            '  "reasoning": "one clear sentence"\n'
+            "}\n\n"
+            "Position sizing rules:\n"
+            "- High conviction (>75%): up to 15% of budget\n"
+            "- Medium conviction (50-75%): 5-10% of budget\n"
+            "- Low conviction (<50%): 2-5% or NO position\n"
+            "- Never recommend >20% in a single position\n"
+            "- If already holding: calculate whether to ADD, HOLD, or REDUCE"
+        ),
+        expected_output="JSON risk assessment with action, confidence, position_size_usd, stop_loss_price, risk_reward_ratio, reasoning.",
+        agent=ag.risk_manager_agent(),
+    )
+
+
 def debate_task(
     ticker: str,
     holding: dict,
@@ -263,6 +326,7 @@ def manager_decision_task(
     alt_data_result: str,
     bull_case: str = "",
     bear_case: str = "",
+    risk_assessment: str = "",
 ) -> Task:
     budget = portfolio.get("budget_usd", 0)
     name = portfolio.get("user_name", "the investor")
@@ -294,27 +358,30 @@ def manager_decision_task(
             f"TECHNICAL:\n{technical_result[:600]}\n\n"
             f"ANALYST:\n{analyst_result[:600]}\n\n"
             f"ALT DATA:\n{alt_data_result[:600]}\n\n"
+            "━━━ RISK MANAGER ━━━\n"
+            f"{risk_assessment[:600]}\n\n"
             "━━━ BULL vs BEAR DEBATE ━━━\n"
             f"BULL ADVOCATE:\n{bull_case}\n\n"
             f"BEAR ADVOCATE:\n{bear_case}\n\n"
             "━━━ YOUR DECISION ━━━\n"
-            "Weigh the bull and bear cases. Consider the probability estimates.\n"
+            "Weigh ALL inputs. Each agent stated a confidence (0-100). Weight higher-confidence agents more.\n"
+            "The risk manager calculated a position size — include this in your recommendation.\n"
             "Ask yourself: would I genuinely message a smart friend about this today?\n\n"
             "CRITICAL: Most of the time, the right answer is NO_ALERT.\n"
             "Only alert if something has genuinely changed or a real signal is confirmed.\n\n"
             "If alerting, structure your message EXACTLY like this:\n\n"
             f"📊 {ticker} — [SIGNAL TYPE]\n\n"
             "SITUATION\n"
-            "[2-3 sentences on what's happening right now]\n\n"
-            "BULL CASE\n"
-            "[Top 2 bull arguments with probability estimate]\n\n"
-            "BEAR CASE\n"
-            "[Top 2 bear arguments with probability estimate]\n\n"
-            "PROBABILITY WEIGHTED VIEW\n"
-            "[Your honest synthesis: X% chance of [outcome] because [reason]]\n\n"
+            "[2-3 sentences on what's happening and why it matters NOW]\n\n"
+            "BULL CASE  [X% probability]\n"
+            "[Top 2 bull arguments — each citing the agent that found it]\n\n"
+            "BEAR CASE  [X% probability]\n"
+            "[Top 2 bear arguments — each citing the agent that found it]\n\n"
+            "RISK MANAGER SAYS\n"
+            "[action: BUY/HOLD/SELL/REDUCE — position size $X — stop at $Y — R:R ratio]\n\n"
             "WHAT TO WATCH\n"
             "[1-2 specific triggers that would change your view]\n\n"
-            "Under 400 words total. No jargon. Write like a smart friend.\n\n"
+            "Under 400 words. No jargon. Write like a smart friend.\n\n"
             f"If NOT alerting: output exactly NO_ALERT\n"
             f"Also output alert_type: {alert_types}"
         ),

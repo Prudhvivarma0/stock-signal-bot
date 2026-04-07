@@ -129,6 +129,27 @@ def alternative_data_agent() -> Agent:
     )
 
 
+def risk_manager_agent() -> Agent:
+    return Agent(
+        role="Risk Manager",
+        goal=(
+            "Given all research signals, calculate the risk-adjusted position recommendation: "
+            "what size position makes sense given the conviction, portfolio heat, and downside risk. "
+            "Output a structured risk assessment with position sizing guidance."
+        ),
+        backstory=(
+            "You managed risk at a long/short equity fund for 12 years. "
+            "You live by one rule: the size of a bet must match the quality of the edge. "
+            "High conviction + high risk = smaller position. "
+            "You use Kelly criterion, ATR-based stops, and portfolio heat to size positions. "
+            "You never let one position blow up the portfolio."
+        ),
+        llm=_llm(),
+        verbose=False,
+        allow_delegation=False,
+    )
+
+
 def bull_advocate_agent() -> Agent:
     return Agent(
         role="Bull Advocate",

@@ -167,6 +167,29 @@ def run_deep_scan(ticker: str, holding: dict, portfolio: dict) -> dict:
 
     time.sleep(3)
 
+    # --- Risk Manager ---
+    risk_assessment = ""
+    try:
+        risk_task = tk.risk_manager_task(
+            ticker=ticker,
+            holding=holding or {},
+            portfolio=portfolio,
+            technical_result=results.get("technical", "not available"),
+            fundamentals_result=results.get("fundamentals", "not available"),
+            bull_case="pending",
+            bear_case="pending",
+        )
+        crew_risk = Crew(agents=[ag.risk_manager_agent()], tasks=[risk_task],
+                         process=Process.sequential, verbose=False)
+        risk_out = _groq_with_backoff(crew_risk.kickoff)
+        risk_assessment = str(risk_out)
+        results["risk_assessment"] = risk_assessment
+        risk_data = _safe_json(risk_assessment)
+        save_scan(ticker, "risk_manager", risk_data.get("reasoning", "")[:300], [], risk_data)
+        time.sleep(3)
+    except Exception as exc:
+        log.error("Risk manager failed for %s: %s", ticker, exc)
+
     # --- Bull / Bear Debate ---
     bull_case, bear_case = "", ""
     try:
@@ -215,6 +238,7 @@ def run_deep_scan(ticker: str, holding: dict, portfolio: dict) -> dict:
             alt_data_result=results.get("alt_data", "not available"),
             bull_case=bull_case,
             bear_case=bear_case,
+            risk_assessment=results.get("risk_assessment", ""),
         )
         crew_mgr = Crew(agents=[ag.manager_agent()], tasks=[manager_task],
                         process=Process.sequential, verbose=False)
