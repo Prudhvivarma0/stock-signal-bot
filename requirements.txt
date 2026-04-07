@@ -6,7 +6,6 @@ pandas
 pandas-ta
 plotly
 streamlit
-streamlit-autorefresh
 apscheduler
 python-telegram-bot
 praw

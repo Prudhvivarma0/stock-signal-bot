@@ -25,11 +25,6 @@ PORTFOLIO_PATH = BASE_DIR / "portfolio.json"
 st.set_page_config(page_title="Portfolio Intelligence", page_icon="📈", layout="wide",
                    initial_sidebar_state="collapsed")
 
-try:
-    from streamlit_autorefresh import st_autorefresh
-    st_autorefresh(interval=5 * 60 * 1000, key="autorefresh")
-except ImportError:
-    pass
 
 init_db()
 
