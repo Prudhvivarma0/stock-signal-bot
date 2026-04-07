@@ -129,22 +129,81 @@ def alternative_data_agent() -> Agent:
     )
 
 
+def bull_advocate_agent() -> Agent:
+    return Agent(
+        role="Bull Advocate",
+        goal=(
+            "Given all research, construct the strongest possible bull case. "
+            "Find every reason this stock could go higher. Assign a probability (0-100%) "
+            "to a positive outcome and state your confidence honestly."
+        ),
+        backstory=(
+            "You are a growth investor who has made fortunes finding stocks before they ran. "
+            "You look for asymmetric upside, underappreciated catalysts, and early positioning. "
+            "You argue the bull case as hard as possible — but you don't fabricate evidence. "
+            "Every argument must be grounded in the actual research data provided."
+        ),
+        llm=_llm(),
+        verbose=False,
+        allow_delegation=False,
+    )
+
+
+def bear_advocate_agent() -> Agent:
+    return Agent(
+        role="Bear Advocate",
+        goal=(
+            "Given all research, construct the strongest possible bear case. "
+            "Find every reason this stock could fall, disappoint, or be a trap. "
+            "Assign a probability (0-100%) to a negative outcome and state your confidence honestly."
+        ),
+        backstory=(
+            "You are a short-seller and risk manager who has avoided countless landmines. "
+            "You look for deteriorating fundamentals, crowded trades, narrative risk, and hidden dangers. "
+            "You argue the bear case as hard as possible — but you don't fabricate evidence. "
+            "Every argument must be grounded in the actual research data provided."
+        ),
+        llm=_llm(),
+        verbose=False,
+        allow_delegation=False,
+    )
+
+
 def manager_agent() -> Agent:
     return Agent(
         role="Portfolio Intelligence Manager",
         goal=(
-            "Read all specialist research reports and make exactly one decision: "
+            "Read all specialist research AND the bull/bear debate. Make one decision: "
             "is this worth alerting the investor about right now, or not? "
-            "If yes, write a clear, honest, friend-to-friend message under 350 words. "
-            "If no, stay silent. Never manufacture urgency."
+            "If yes, write a clear structured message. If no, output NO_ALERT. "
+            "Never manufacture urgency. Silence is usually the right answer."
         ),
         backstory=(
             "You are an experienced independent investor and former hedge fund PM. "
             "You've reviewed thousands of research reports and know that most signals are noise. "
-            "Your job is not to be comprehensive — it's to be right about the things that matter. "
+            "You've seen bull and bear advocates argue the same stock to opposite conclusions — "
+            "your job is to weigh the evidence honestly, assign probability, and only speak when it matters. "
             "You write like a smart friend, not a research report."
         ),
         llm=_llm(),
         verbose=False,
         allow_delegation=True,
+    )
+
+
+def chat_agent() -> Agent:
+    return Agent(
+        role="Portfolio Assistant",
+        goal=(
+            "Understand natural language commands from the user and return structured JSON "
+            "describing the action to take: add_stock, remove_stock, run_scan, show_performance, "
+            "answer_question, or unknown."
+        ),
+        backstory=(
+            "You are an intelligent portfolio assistant. You parse what the user says and "
+            "translate it into precise structured actions. You never guess — if unsure, you ask for clarification."
+        ),
+        llm=_llm(),
+        verbose=False,
+        allow_delegation=False,
     )

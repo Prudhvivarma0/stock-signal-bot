@@ -167,7 +167,41 @@ def run_deep_scan(ticker: str, holding: dict, portfolio: dict) -> dict:
 
     time.sleep(3)
 
-    # --- Agent 7: Manager Decision ---
+    # --- Bull / Bear Debate ---
+    bull_case, bear_case = "", ""
+    try:
+        bull_task, bear_task = tk.debate_task(
+            ticker=ticker,
+            holding=holding or {},
+            fundamentals_result=results.get("fundamentals", "not available"),
+            news_result=results.get("news", "not available"),
+            social_result=results.get("social", "not available"),
+            technical_result=results.get("technical", "not available"),
+            analyst_result=results.get("analyst", "not available"),
+            alt_data_result=results.get("alt_data", "not available"),
+        )
+        # Run bull and bear sequentially (rate limit friendly)
+        crew_bull = Crew(agents=[ag.bull_advocate_agent()], tasks=[bull_task],
+                         process=Process.sequential, verbose=False)
+        bull_out = _groq_with_backoff(crew_bull.kickoff)
+        bull_case = str(bull_out)
+        results["bull_case"] = bull_case
+        save_scan(ticker, "bull_advocate", bull_case[:500], [], {"bull_case": bull_case})
+
+        time.sleep(3)
+
+        crew_bear = Crew(agents=[ag.bear_advocate_agent()], tasks=[bear_task],
+                         process=Process.sequential, verbose=False)
+        bear_out = _groq_with_backoff(crew_bear.kickoff)
+        bear_case = str(bear_out)
+        results["bear_case"] = bear_case
+        save_scan(ticker, "bear_advocate", bear_case[:500], [], {"bear_case": bear_case})
+
+        time.sleep(3)
+    except Exception as exc:
+        log.error("Debate agents failed for %s: %s", ticker, exc)
+
+    # --- Manager Decision (reads debate + all research) ---
     try:
         manager_task = tk.manager_decision_task(
             ticker=ticker,
@@ -179,28 +213,27 @@ def run_deep_scan(ticker: str, holding: dict, portfolio: dict) -> dict:
             technical_result=results.get("technical", "not available"),
             analyst_result=results.get("analyst", "not available"),
             alt_data_result=results.get("alt_data", "not available"),
+            bull_case=bull_case,
+            bear_case=bear_case,
         )
-        crew7 = Crew(
-            agents=[ag.manager_agent()],
-            tasks=[manager_task],
-            process=Process.sequential,
-            verbose=False,
-        )
-        decision_raw = _groq_with_backoff(crew7.kickoff)
+        crew_mgr = Crew(agents=[ag.manager_agent()], tasks=[manager_task],
+                        process=Process.sequential, verbose=False)
+        decision_raw = _groq_with_backoff(crew_mgr.kickoff)
         decision = str(decision_raw).strip()
         results["manager_decision"] = decision
 
-        if decision.upper() != "NO_ALERT" and len(decision) > 20:
-            # determine alert type from content
+        if "NO_ALERT" not in decision.upper() and len(decision) > 20:
             upper = decision.upper()
-            if "OPPORTUNITY" in upper:
-                alert_type = "OPPORTUNITY"
-            elif "URGENT" in upper:
+            if "SELL" in upper or "URGENT_EXIT" in upper:
                 alert_type = "URGENT"
-            elif "WARNING" in upper:
+            elif "HOLD_SIGNAL" in upper:
+                alert_type = "HOLD_SIGNAL"
+            elif "OPPORTUNITY" in upper:
+                alert_type = "OPPORTUNITY"
+            elif "WARNING" in upper or "SELL_WARNING" in upper:
                 alert_type = "WARNING"
             else:
-                alert_type = "OPPORTUNITY"
+                alert_type = "SIGNAL"
 
             if not was_alert_sent_recently(ticker, hours=72):
                 chat_id = portfolio.get("telegram_chat_id", "")
@@ -258,6 +291,19 @@ def run_pulse_scan(ticker: str, portfolio: dict) -> dict:
     result["trigger_emergency"] = trigger
 
     return result
+
+
+def run_chat_command(user_message: str, portfolio: dict) -> dict:
+    """Parse a natural language command and return a structured action dict."""
+    try:
+        task = tk.chat_command_task(user_message, portfolio)
+        crew = Crew(agents=[ag.chat_agent()], tasks=[task],
+                    process=Process.sequential, verbose=False)
+        out = _groq_with_backoff(crew.kickoff)
+        return _safe_json(str(out))
+    except Exception as exc:
+        log.error("chat_command: %s", exc)
+        return {"action": "unknown", "clarification": str(exc)}
 
 
 def run_weekly_debrief(portfolio: dict) -> None:

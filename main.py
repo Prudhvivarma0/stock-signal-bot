@@ -57,18 +57,26 @@ def has_holdings(portfolio: dict) -> bool:
 
 
 def launch_dashboard():
-    """Start Streamlit dashboard as a subprocess."""
+    """Start Streamlit dashboard as a subprocess and open browser."""
     log.info("Launching Streamlit dashboard on port 8501...")
     proc = subprocess.Popen(
         [sys.executable, "-m", "streamlit", "run",
          str(BASE_DIR / "dashboard.py"),
          "--server.port", "8501",
-         "--server.headless", "true",
-         "--server.runOnSave", "false"],
+         "--server.headless", "false",
+         "--server.runOnSave", "false",
+         "--browser.gatherUsageStats", "false"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
     log.info("Dashboard PID: %d — http://localhost:8501", proc.pid)
+    # Open browser after short delay for server to start
+    time.sleep(3)
+    try:
+        import webbrowser
+        webbrowser.open("http://localhost:8501")
+    except Exception:
+        pass
     return proc
 
 

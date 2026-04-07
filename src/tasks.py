@@ -179,6 +179,78 @@ def alternative_data_task(ticker: str, company_name: str = "") -> Task:
     )
 
 
+def debate_task(
+    ticker: str,
+    holding: dict,
+    fundamentals_result: str,
+    news_result: str,
+    social_result: str,
+    technical_result: str,
+    analyst_result: str,
+    alt_data_result: str,
+) -> tuple:
+    """Returns (bull_task, bear_task) for parallel execution."""
+    context = (
+        f"RESEARCH SUMMARY FOR {ticker}\n\n"
+        f"FUNDAMENTALS:\n{fundamentals_result[:800]}\n\n"
+        f"NEWS:\n{news_result[:600]}\n\n"
+        f"SOCIAL:\n{social_result[:600]}\n\n"
+        f"TECHNICAL:\n{technical_result[:600]}\n\n"
+        f"ANALYST:\n{analyst_result[:600]}\n\n"
+        f"ALT DATA:\n{alt_data_result[:600]}\n"
+    )
+    is_holding = bool(holding and holding.get("entry_price"))
+    position_context = (
+        f"The investor ALREADY HOLDS {holding.get('shares')} shares at "
+        f"${holding.get('entry_price')} avg entry. "
+        f"Current question is: HOLD or SELL? Not whether to buy."
+    ) if is_holding else f"The investor does NOT hold {ticker}. Question is: BUY or SKIP?"
+
+    bull_task = Task(
+        description=(
+            f"Argue the strongest possible BULL case for {ticker}.\n"
+            f"{position_context}\n\n"
+            f"{context}\n"
+            "Using ONLY evidence from the research above, build the bull argument.\n"
+            "Structure your response as:\n"
+            "BULL CASE:\n"
+            "1. [strongest argument + data source]\n"
+            "2. [second argument + data source]\n"
+            "3. [third argument + data source]\n\n"
+            "KEY CATALYST: [what specific event/signal could drive this higher]\n"
+            "TIMEFRAME: [when this plays out]\n"
+            "BULL PROBABILITY: [0-100]%\n"
+            "CONFIDENCE: [low/medium/high] because [reason]\n"
+            "WHAT WOULD INVALIDATE THIS: [honest answer]"
+        ),
+        expected_output="Structured bull case with probability estimate and invalidation condition.",
+        agent=ag.bull_advocate_agent(),
+    )
+
+    bear_task = Task(
+        description=(
+            f"Argue the strongest possible BEAR case for {ticker}.\n"
+            f"{position_context}\n\n"
+            f"{context}\n"
+            "Using ONLY evidence from the research above, build the bear argument.\n"
+            "Structure your response as:\n"
+            "BEAR CASE:\n"
+            "1. [strongest argument + data source]\n"
+            "2. [second argument + data source]\n"
+            "3. [third argument + data source]\n\n"
+            "KEY RISK: [what specific event/signal could drive this lower]\n"
+            "TIMEFRAME: [when this plays out]\n"
+            "BEAR PROBABILITY: [0-100]%\n"
+            "CONFIDENCE: [low/medium/high] because [reason]\n"
+            "WHAT WOULD INVALIDATE THIS: [honest answer]"
+        ),
+        expected_output="Structured bear case with probability estimate and invalidation condition.",
+        agent=ag.bear_advocate_agent(),
+    )
+
+    return bull_task, bear_task
+
+
 def manager_decision_task(
     ticker: str,
     holding: dict,
@@ -189,44 +261,89 @@ def manager_decision_task(
     technical_result: str,
     analyst_result: str,
     alt_data_result: str,
+    bull_case: str = "",
+    bear_case: str = "",
 ) -> Task:
     budget = portfolio.get("budget_usd", 0)
     name = portfolio.get("user_name", "the investor")
 
+    is_holding = bool(holding and holding.get("entry_price"))
+    shares = holding.get("shares", 0) if holding else 0
+    entry = holding.get("entry_price", 0) if holding else 0
+    stop_pct = holding.get("stop_loss_pct", 8) if holding else 8
+
+    position_block = (
+        f"⚠️ POSITION STATUS: The investor ALREADY HOLDS {shares} shares at ${entry} avg entry.\n"
+        f"Stop-loss set at {stop_pct}% below entry (${round(entry*(1-stop_pct/100),2)}).\n"
+        f"The question is NOT whether to buy. It is: HOLD, ADD, or SELL?\n"
+    ) if is_holding else (
+        f"📋 POSITION STATUS: Not currently held. Budget available: ${budget:,}.\n"
+        f"The question is: Is there a genuine signal worth acting on?\n"
+    )
+
+    alert_types = "HOLD_SIGNAL / SELL_WARNING / URGENT_EXIT / OPPORTUNITY / NO_ALERT" if is_holding else "OPPORTUNITY / WARNING / URGENT / NO_ALERT"
+
     return Task(
         description=(
-            f"You have received deep research on {ticker} from 6 specialist agents.\n\n"
-            f"=== FUNDAMENTALS ===\n{fundamentals_result}\n\n"
-            f"=== NEWS ===\n{news_result}\n\n"
-            f"=== SOCIAL/SENTIMENT ===\n{social_result}\n\n"
-            f"=== TECHNICAL ===\n{technical_result}\n\n"
-            f"=== ANALYST/INSTITUTIONAL ===\n{analyst_result}\n\n"
-            f"=== ALTERNATIVE DATA ===\n{alt_data_result}\n\n"
-            "---\n"
-            f"This research is for {name}, who:\n"
-            f"- Has ${budget:,} available\n"
-            "- Holds positions for days to weeks to months (NOT day trading)\n"
-            "- Strategy: find signals before mainstream knows, buy early, sell into hype\n"
-            "- Also needs protection: alert if something they hold is heading for trouble\n\n"
-            "READ EVERYTHING. Then decide:\n"
-            "1. Is there a genuine pre-hype signal confirmed by MULTIPLE INDEPENDENT sources?\n"
-            "2. For this holding: is the original thesis deteriorating in a meaningful way?\n"
-            "3. How confident are you really? What contradicts your view?\n"
-            "4. What timeframe? What would change your view?\n\n"
-            "CRITICAL: Most of the time, the right answer is silence.\n"
-            "Only output an alert if you would genuinely call a smart friend and say "
-            "'you need to look at this today.'\n\n"
-            "If alerting, write like a smart friend sending a message.\n"
-            "No tables, no scores, no bullet lists.\n"
-            "Clear honest thinking in plain English. Under 350 words.\n"
-            "Start with: {ticker} — OPPORTUNITY / WARNING / URGENT\n"
-            "End with what they might consider (don't tell them what to do).\n\n"
-            "If NOT alerting, output exactly: NO_ALERT\n\n"
-            "Also output the alert_type field: OPPORTUNITY / WARNING / URGENT / NO_ALERT"
+            f"You are the final decision-maker for {ticker}.\n\n"
+            f"{position_block}\n"
+            "━━━ RESEARCH FROM 6 SPECIALIST AGENTS ━━━\n"
+            f"FUNDAMENTALS:\n{fundamentals_result[:600]}\n\n"
+            f"NEWS:\n{news_result[:600]}\n\n"
+            f"SOCIAL:\n{social_result[:600]}\n\n"
+            f"TECHNICAL:\n{technical_result[:600]}\n\n"
+            f"ANALYST:\n{analyst_result[:600]}\n\n"
+            f"ALT DATA:\n{alt_data_result[:600]}\n\n"
+            "━━━ BULL vs BEAR DEBATE ━━━\n"
+            f"BULL ADVOCATE:\n{bull_case}\n\n"
+            f"BEAR ADVOCATE:\n{bear_case}\n\n"
+            "━━━ YOUR DECISION ━━━\n"
+            "Weigh the bull and bear cases. Consider the probability estimates.\n"
+            "Ask yourself: would I genuinely message a smart friend about this today?\n\n"
+            "CRITICAL: Most of the time, the right answer is NO_ALERT.\n"
+            "Only alert if something has genuinely changed or a real signal is confirmed.\n\n"
+            "If alerting, structure your message EXACTLY like this:\n\n"
+            f"📊 {ticker} — [SIGNAL TYPE]\n\n"
+            "SITUATION\n"
+            "[2-3 sentences on what's happening right now]\n\n"
+            "BULL CASE\n"
+            "[Top 2 bull arguments with probability estimate]\n\n"
+            "BEAR CASE\n"
+            "[Top 2 bear arguments with probability estimate]\n\n"
+            "PROBABILITY WEIGHTED VIEW\n"
+            "[Your honest synthesis: X% chance of [outcome] because [reason]]\n\n"
+            "WHAT TO WATCH\n"
+            "[1-2 specific triggers that would change your view]\n\n"
+            "Under 400 words total. No jargon. Write like a smart friend.\n\n"
+            f"If NOT alerting: output exactly NO_ALERT\n"
+            f"Also output alert_type: {alert_types}"
         ),
         expected_output=(
-            "Either 'NO_ALERT' or a plain-English alert message under 350 words starting with "
-            "'{ticker} — OPPORTUNITY/WARNING/URGENT', plus alert_type field."
+            "Either NO_ALERT or a structured alert message with SITUATION/BULL CASE/"
+            "BEAR CASE/PROBABILITY WEIGHTED VIEW/WHAT TO WATCH sections."
         ),
         agent=ag.manager_agent(),
+    )
+
+
+def chat_command_task(user_message: str, portfolio: dict) -> Task:
+    holdings_str = ", ".join(h["ticker"] for h in portfolio.get("holdings", []))
+    watchlist_str = ", ".join(portfolio.get("watchlist", []))
+    return Task(
+        description=(
+            f"The user said: \"{user_message}\"\n\n"
+            f"Current holdings: {holdings_str or 'none'}\n"
+            f"Current watchlist: {watchlist_str or 'none'}\n\n"
+            "Parse this into a JSON action. Possible actions:\n"
+            "- add_stock: {\"action\": \"add_stock\", \"ticker\": \"X\", \"shares\": N, \"entry_price\": N, \"stop_loss_pct\": N}\n"
+            "- remove_stock: {\"action\": \"remove_stock\", \"ticker\": \"X\"}\n"
+            "- add_watchlist: {\"action\": \"add_watchlist\", \"ticker\": \"X\"}\n"
+            "- run_scan: {\"action\": \"run_scan\", \"ticker\": \"X\", \"type\": \"deep|pulse\"}\n"
+            "- show_performance: {\"action\": \"show_performance\"}\n"
+            "- answer_question: {\"action\": \"answer_question\", \"answer\": \"[your answer]\"}\n"
+            "- unknown: {\"action\": \"unknown\", \"clarification\": \"[what you need]\"}\n\n"
+            "Return ONLY valid JSON. No markdown, no explanation."
+        ),
+        expected_output="Valid JSON object with action field.",
+        agent=ag.chat_agent(),
     )
