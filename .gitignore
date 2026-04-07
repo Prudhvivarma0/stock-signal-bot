@@ -1,5 +1,6 @@
-# Secrets
+# Secrets & personal data
 .env
+portfolio.json
 
 # Database
 signals.db

@@ -83,11 +83,18 @@ def estimate_entry_date(ticker: str, entry_price: float) -> str:
         if df.empty:
             return ""
         df = df.reset_index()
-        close_col = "Close" if "Close" in df.columns else df.columns[-2]
+        # Flatten MultiIndex columns (ticker, field) -> field
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [col[0] if col[1] == "" else col[0] for col in df.columns]
+        # Normalize to simple strings
+        df.columns = [str(c).strip() for c in df.columns]
+        close_col = next((c for c in df.columns if c.lower() == "close"), None)
+        date_col = next((c for c in df.columns if c.lower() in ("date", "datetime")), None)
+        if not close_col or not date_col:
+            return ""
         df["diff"] = (df[close_col] - entry_price).abs()
         idx = df["diff"].idxmin()
-        row = df.loc[idx]
-        return str(row["Date"])[:10]
+        return str(df.loc[idx, date_col])[:10]
     except Exception as exc:
         log.error("estimate_entry_date(%s %.2f): %s", ticker, entry_price, exc)
         return ""

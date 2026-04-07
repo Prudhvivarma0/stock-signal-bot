@@ -14,14 +14,6 @@ load_dotenv(BASE_DIR / ".env")
 PORTFOLIO_PATH = BASE_DIR / "portfolio.json"
 ENV_PATH = BASE_DIR / ".env"
 
-EXCHANGES = {
-    "1": "NASDAQ",
-    "2": "NYSE",
-    "3": "DFM",
-    "4": "ADX",
-    "5": "Other",
-}
-
 
 def ask(prompt: str, default: str = "") -> str:
     try:
@@ -47,6 +39,62 @@ def ask_int(prompt: str, default: int = 0) -> int:
             return int(raw)
         except ValueError:
             print("  Please enter a whole number.")
+
+
+def detect_exchange(ticker: str) -> str:
+    """Auto-detect exchange from ticker suffix, EODHD search, or yfinance lookup."""
+    import os
+    t = ticker.upper()
+
+    # Explicit suffix in ticker (e.g. EMAAR.DFM)
+    if t.endswith(".DFM"):
+        return "DFM"
+    if t.endswith(".ADX"):
+        return "ADX"
+    if t.endswith(".LSE") or t.endswith(".L"):
+        return "LSE"
+    if t.endswith(".TSX"):
+        return "TSX"
+
+    # Try EODHD search — best for UAE/international stocks
+    eodhd_key = os.getenv("EODHD_API_KEY", "")
+    if eodhd_key:
+        try:
+            import requests as req
+            r = req.get(
+                "https://eodhd.com/api/search/",
+                params={"api_token": eodhd_key, "q": t, "limit": 5, "fmt": "json"},
+                timeout=10,
+            )
+            results = r.json() if r.ok else []
+            for item in results:
+                code = (item.get("Code") or "").upper()
+                exch = (item.get("Exchange") or "").upper()
+                if code == t:
+                    if exch in ("DFM", "ADX", "NASDAQ", "NYSE", "LSE", "TSX"):
+                        return exch
+                    # map EODHD exchange codes
+                    exch_map = {"US": "NASDAQ", "LSE": "LSE", "TO": "TSX"}
+                    return exch_map.get(exch, exch)
+        except Exception:
+            pass
+
+    # yfinance fallback for US stocks
+    try:
+        import yfinance as yf
+        info = yf.Ticker(t).info or {}
+        exch = (info.get("exchange") or "").upper()
+        full = (info.get("fullExchangeName") or "").upper()
+        if "NASDAQ" in exch or "NASDAQ" in full or "NMS" in exch:
+            return "NASDAQ"
+        if "NYSE" in exch or "NYSE" in full or "NYQ" in exch:
+            return "NYSE"
+        if exch and exch not in ("NONE", "N/A"):
+            return exch
+    except Exception:
+        pass
+
+    return "NASDAQ"
 
 
 def send_test_telegram(token: str, chat_id: str) -> bool:
@@ -146,7 +194,7 @@ def main():
             if ticker in ("DONE", ""):
                 break
 
-            shares = ask_int(f"How many shares of {ticker} do you hold?:", 1)
+            shares = ask_float(f"How many shares of {ticker} do you hold? (fractional ok, e.g. 1.5):", 1.0)
 
             # Screenshot or manual price
             price_input = ask(
@@ -179,15 +227,12 @@ def main():
                 except ValueError:
                     entry_price = ask_float(f"Enter {ticker} average price:", 0.0)
 
-            # Exchange
-            print(f"  What exchange is {ticker} on?")
-            for k, v in EXCHANGES.items():
-                print(f"    {k}. {v}")
-            exc_choice = ask("  Choice (1-5):", "1")
-            exchange = EXCHANGES.get(exc_choice, "NASDAQ")
+            # Exchange — auto-detect
+            print(f"  Detecting exchange for {ticker}...")
+            exchange = detect_exchange(ticker)
+            print(f"  Detected: {exchange}")
 
-            # Thesis
-            thesis = ask(f"Why did you buy {ticker}? (press Enter to skip):", "")
+            thesis = ""
 
             # Stop loss
             stop_loss = ask_float(f"Stop-loss % for {ticker}? (default 8):", 8.0)
@@ -203,7 +248,7 @@ def main():
             holdings.append({
                 "ticker": ticker,
                 "exchange": exchange,
-                "shares": shares,
+                "shares": float(shares),
                 "entry_price": entry_price,
                 "entry_date_estimated": entry_date,
                 "stop_loss_pct": stop_loss,
