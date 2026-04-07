@@ -1,5 +1,6 @@
 """News RSS aggregation and sentiment scoring."""
 import logging
+import os
 import statistics
 import time
 from datetime import datetime, timedelta, timezone
@@ -8,6 +9,48 @@ import feedparser
 import requests
 
 log = logging.getLogger(__name__)
+
+
+def newsapi_search(ticker: str, company_name: str = "") -> list:
+    """NewsAPI everything endpoint — 100 req/day on free tier."""
+    try:
+        api_key = os.getenv("NEWSAPI_KEY", "")
+        if not api_key:
+            return []
+        query = company_name or ticker
+        r = requests.get(
+            "https://newsapi.org/v2/everything",
+            params={
+                "q": query,
+                "sortBy": "publishedAt",
+                "pageSize": 20,
+                "language": "en",
+                "apiKey": api_key,
+            },
+            timeout=15,
+        )
+        r.raise_for_status()
+        articles = r.json().get("articles", [])
+        from datetime import timezone as tz
+        results = []
+        for a in articles:
+            pub = a.get("publishedAt", "")
+            age = 48.0
+            try:
+                dt = datetime.fromisoformat(pub.replace("Z", "+00:00"))
+                age = (datetime.now(tz.utc) - dt).total_seconds() / 3600
+            except Exception:
+                pass
+            results.append({
+                "title": a.get("title", ""),
+                "source": f"newsapi:{a.get('source', {}).get('name', 'unknown')}",
+                "age_hours": age,
+                "link": a.get("url", ""),
+            })
+        return results
+    except Exception as exc:
+        log.error("newsapi_search(%s): %s", ticker, exc)
+        return []
 
 
 def _parse_feed(url: str, timeout: int = 10) -> list:
@@ -176,6 +219,7 @@ def build_news_report(ticker: str, company_name: str = "") -> dict:
     for fn, args, name in [
         (google_news_rss, (ticker, company_name), "google_news"),
         (yahoo_finance_rss, (ticker,), "yahoo_finance"),
+        (newsapi_search, (ticker, company_name), "newsapi"),
         (seeking_alpha_rss, (ticker,), "seeking_alpha"),
         (benzinga_rss, (), "benzinga"),
         (business_wire_rss, (), "business_wire"),

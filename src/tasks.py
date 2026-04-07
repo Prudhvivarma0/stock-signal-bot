@@ -6,12 +6,25 @@ from src import agents as ag
 
 def fundamentals_task(ticker: str, holding: dict = None) -> Task:
     holding_context = ""
+    exchange = "US"
     if holding:
         holding_context = (
             f"The investor holds {holding.get('shares')} shares at "
             f"${holding.get('entry_price')} avg entry. "
             f"Original thesis: {holding.get('thesis', 'not provided')}."
         )
+        exchange = holding.get("exchange", "US")
+
+    is_uae = exchange in ("DFM", "ADX")
+    uae_note = (
+        f"\nThis is a UAE stock on {exchange}. Use eodhd_fundamentals('{ticker}', '{exchange}') "
+        f"for fundamentals and eodhd_insider_transactions for insider data. "
+        f"SEC tools are not applicable — skip them."
+    ) if is_uae else (
+        "\nUse sec_edgar_facts to get 3-year revenue/income/cash flow trends.\n"
+        "Use sec_8k_alerts to check for any breaking events today.\n"
+        "Use insider_transactions and openinsider_scrape for last 30 days of insider activity."
+    )
 
     return Task(
         description=(
@@ -19,9 +32,9 @@ def fundamentals_task(ticker: str, holding: dict = None) -> Task:
             "Use yfinance_fundamentals to get P/E, forward P/E, PEG, EPS, revenue growth, "
             "margins, FCF, debt/equity, ROE, book value, short ratio, institutional ownership, "
             "analyst targets, and earnings history.\n"
-            "Use sec_edgar_facts to get 3-year revenue/income/cash flow trends.\n"
-            "Use sec_8k_alerts to check for any breaking events today.\n"
-            "Use insider_transactions and openinsider_scrape for last 30 days of insider activity.\n"
+            "Use av_company_overview and av_earnings for additional fundamental confirmation "
+            "(EPS surprise history, quarterly revenue trend, analyst target).\n"
+            f"{uae_note}\n"
             "Use fred_macro for current interest rate environment.\n\n"
             "Return a JSON with: fundamental_score (-1 to 1), valuation (cheap/fair/expensive), "
             "financial_health (strong/mixed/weak), insider_signal (bullish/neutral/bearish), "

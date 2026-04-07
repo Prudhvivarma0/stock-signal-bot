@@ -1,14 +1,13 @@
 """CrewAI agent definitions for stock research."""
 import os
-from crewai import Agent
-from langchain_groq import ChatGroq
+from crewai import Agent, LLM
 
 LLM_MODEL = "groq/llama-3.3-70b-versatile"
 
 
-def _llm():
-    return ChatGroq(
-        model="llama-3.3-70b-versatile",
+def _llm() -> LLM:
+    return LLM(
+        model=LLM_MODEL,
         api_key=os.getenv("GROQ_API_KEY", ""),
         temperature=0.1,
         max_tokens=4096,
