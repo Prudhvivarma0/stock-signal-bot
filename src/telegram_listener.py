@@ -31,11 +31,13 @@ HELP_TEXT = (
     "/scan — deep scan all holdings\n"
     "/pulse NVDA — quick news + price check\n"
     "/status — portfolio P&L snapshot\n"
+    "/add TSLA 5 220.50 — add stock (ticker, shares, price)\n"
+    "/remove TSLA — remove from portfolio\n"
     "/help — this message\n\n"
-    "Or just ask anything in plain English:\n"
+    "Or plain English:\n"
+    "  'I bought 5 shares of TSLA at $220'\n"
     "  'how is NVDA doing?'\n"
-    "  'add TSLA at $220 for 5 shares'\n"
-    "  'what's my total P&L?'"
+    "  'what is my total P&L?'"
 )
 
 
@@ -84,6 +86,31 @@ def _handle_message(text: str, chat_id: str):
         threading.Thread(target=_handle_pulse, args=(ticker, chat_id), daemon=True).start()
         name = ticker or "all holdings"
         _reply(f"Running pulse scan on {name}...", chat_id)
+        return
+
+    # /add TICKER SHARES PRICE  e.g. /add TSLA 5 220.50
+    if lower.startswith("/add "):
+        parts = text.split()
+        if len(parts) >= 4:
+            try:
+                ticker = parts[1].upper()
+                shares = float(parts[2])
+                price = float(parts[3].replace("$", ""))
+                stop = float(parts[4]) if len(parts) > 4 else 8.0
+                _handle_add(ticker, shares, price, stop, chat_id)
+            except ValueError:
+                _reply("Format: /add TICKER SHARES PRICE\nExample: /add TSLA 5 220.50", chat_id)
+        else:
+            _reply("Format: /add TICKER SHARES PRICE\nExample: /add TSLA 5 220.50", chat_id)
+        return
+
+    # /remove TICKER
+    if lower.startswith("/remove "):
+        parts = text.split()
+        if len(parts) >= 2:
+            _handle_remove(parts[1].upper(), chat_id)
+        else:
+            _reply("Format: /remove TICKER\nExample: /remove TSLA", chat_id)
         return
 
     # Anything else — route through AI chat agent
@@ -210,6 +237,55 @@ def _handle_status(chat_id: str):
         _reply(f"Status failed: {str(exc)[:200]}", chat_id)
 
 
+def _handle_add(ticker: str, shares: float, price: float, stop_pct: float, chat_id: str):
+    try:
+        import json
+        from setup import detect_exchange
+        from src.tools.uae_data import is_uae
+        portfolio = _load_portfolio()
+        exchange = detect_exchange(ticker)
+        currency = "AED" if is_uae(exchange) else "USD"
+        # Remove existing entry if present
+        portfolio["holdings"] = [h for h in portfolio.get("holdings", []) if h["ticker"] != ticker]
+        portfolio["holdings"].append({
+            "ticker": ticker, "exchange": exchange, "currency": currency,
+            "shares": shares, "entry_price": price,
+            "entry_date_estimated": "", "stop_loss_pct": stop_pct,
+            "thesis": "", "screenshot_path": "",
+        })
+        path = BASE_DIR / "portfolio.json"
+        with open(path, "w") as f:
+            json.dump(portfolio, f, indent=2)
+        _reply(
+            f"Added {ticker}\n"
+            f"  {shares} shares @ {currency} {price:.4f}\n"
+            f"  Exchange: {exchange}\n"
+            f"  Stop loss: {stop_pct}%",
+            chat_id,
+        )
+    except Exception as exc:
+        log.error("Telegram add error: %s", exc)
+        _reply(f"Failed to add {ticker}: {str(exc)[:150]}", chat_id)
+
+
+def _handle_remove(ticker: str, chat_id: str):
+    try:
+        import json
+        portfolio = _load_portfolio()
+        before = len(portfolio.get("holdings", []))
+        portfolio["holdings"] = [h for h in portfolio.get("holdings", []) if h["ticker"] != ticker]
+        if len(portfolio["holdings"]) < before:
+            path = BASE_DIR / "portfolio.json"
+            with open(path, "w") as f:
+                json.dump(portfolio, f, indent=2)
+            _reply(f"Removed {ticker} from your portfolio.", chat_id)
+        else:
+            _reply(f"{ticker} not found in your portfolio.", chat_id)
+    except Exception as exc:
+        log.error("Telegram remove error: %s", exc)
+        _reply(f"Failed to remove {ticker}: {str(exc)[:150]}", chat_id)
+
+
 def _handle_chat(text: str, chat_id: str):
     try:
         from src.crew import run_chat_command
@@ -232,13 +308,24 @@ def _handle_chat(text: str, chat_id: str):
             else:
                 _reply("Which stock do you want me to scan?", chat_id)
         elif act == "add_stock":
-            # Defer to dashboard for adds — too complex to confirm via Telegram
-            t = action.get("ticker", "")
-            _reply(
-                f"To add {t}, use the dashboard at http://localhost:8501 "
-                f"or send: /add {t} (coming soon)",
-                chat_id,
-            )
+            t = action.get("ticker", "").upper()
+            sh = float(action.get("shares", 0) or 0)
+            ep = float(action.get("entry_price", 0) or 0)
+            sl = float(action.get("stop_loss_pct", 8) or 8)
+            if t and sh > 0 and ep > 0:
+                _handle_add(t, sh, ep, sl, chat_id)
+            else:
+                _reply(
+                    f"I understood you want to add {t or 'a stock'} but need shares and price.\n"
+                    f"Use: /add {t or 'TICKER'} SHARES PRICE",
+                    chat_id,
+                )
+        elif act == "remove_stock":
+            t = action.get("ticker", "").upper()
+            if t:
+                _handle_remove(t, chat_id)
+            else:
+                _reply("Which stock do you want to remove?", chat_id)
         else:
             clarification = action.get("clarification", "")
             _reply(
