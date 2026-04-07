@@ -200,6 +200,11 @@ def main():
     # Launch dashboard
     dash_proc = launch_dashboard()
 
+    # Start Telegram listener (incoming commands)
+    from src.telegram_listener import start_listener_thread
+    start_listener_thread()
+    log.info("Telegram listener started — send /help to your bot to test it.")
+
     # Start scheduler
     from src.scheduler import build_scheduler
     scheduler = build_scheduler(timezone=portfolio.get("timezone", "Asia/Dubai"))
