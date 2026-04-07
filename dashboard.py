@@ -508,99 +508,109 @@ with tab_chat:
 
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
+                replies = []
                 try:
                     from src.crew import run_chat_command
-                    action = run_chat_command(user_input, portfolio)
-                    act = action.get("action", "unknown")
-                    reply = ""
+                    import threading
+                    actions = run_chat_command(user_input, portfolio)
 
-                    if act == "add_stock":
-                        t = action.get("ticker", "").upper()
-                        sh = float(action.get("shares", 0))
-                        ep = float(action.get("entry_price", 0))
-                        sl = float(action.get("stop_loss_pct", 8))
-                        if t and sh > 0 and ep > 0:
-                            from src.tools.yfinance_tools import estimate_entry_date
-                            from setup import detect_exchange
-                            exch = detect_exchange(t)
-                            edate = estimate_entry_date(t, ep)
-                            currency = "AED" if is_uae(exch) else "USD"
-                            portfolio["holdings"] = [h for h in portfolio["holdings"] if h["ticker"] != t]
-                            portfolio["holdings"].append({
-                                "ticker": t, "exchange": exch, "currency": currency,
-                                "shares": sh, "entry_price": ep,
-                                "entry_date_estimated": edate,
-                                "stop_loss_pct": sl, "thesis": "", "screenshot_path": "",
-                            })
-                            save_portfolio(portfolio)
-                            reply = f"Added **{t}** — {sh} shares @ {ep} {currency} (exchange: {exch}, stop: {sl}%)"
-                        else:
-                            reply = "I need ticker, shares, and entry price. Could you confirm those?"
+                    for action in actions:
+                        act = action.get("action", "unknown")
 
-                    elif act == "remove_stock":
-                        t = action.get("ticker", "").upper()
-                        before = len(portfolio["holdings"])
-                        portfolio["holdings"] = [h for h in portfolio["holdings"] if h["ticker"] != t]
-                        save_portfolio(portfolio)
-                        reply = (f"Removed **{t}** from portfolio."
-                                 if len(portfolio["holdings"]) < before
-                                 else f"Couldn't find {t} in your holdings.")
-
-                    elif act == "add_watchlist":
-                        t = action.get("ticker", "").upper()
-                        if t and t not in portfolio.get("watchlist", []):
-                            portfolio.setdefault("watchlist", []).append(t)
-                            save_portfolio(portfolio)
-                            reply = f"Added **{t}** to your watchlist."
-                        else:
-                            reply = f"{t} is already on your watchlist."
-
-                    elif act == "run_scan":
-                        t = action.get("ticker", "").upper()
-                        scan_type = action.get("type", "pulse")
-                        reply = f"Kicking off a {scan_type} scan on **{t}**... check the Alerts tab in a few minutes."
-                        import threading
-                        def _bg_scan(tkr, stype, pf):
-                            from src.crew import run_deep_scan, run_pulse_scan
-                            h = next((x for x in pf["holdings"] if x["ticker"] == tkr), {})
-                            if stype == "deep":
-                                run_deep_scan(tkr, h, pf)
+                        if act == "add_stock":
+                            t = (action.get("ticker") or "").upper()
+                            sh = float(action.get("shares") or 0)
+                            ep = float(action.get("entry_price") or 0)
+                            sl = float(action.get("stop_loss_pct") or 8)
+                            if t and sh > 0 and ep > 0:
+                                from src.tools.yfinance_tools import estimate_entry_date
+                                from setup import detect_exchange
+                                exch = detect_exchange(t)
+                                edate = estimate_entry_date(t, ep)
+                                currency = "AED" if is_uae(exch) else "USD"
+                                portfolio["holdings"] = [h for h in portfolio["holdings"] if h["ticker"] != t]
+                                portfolio["holdings"].append({
+                                    "ticker": t, "exchange": exch, "currency": currency,
+                                    "shares": sh, "entry_price": ep,
+                                    "entry_date_estimated": edate,
+                                    "stop_loss_pct": sl, "thesis": "", "screenshot_path": "",
+                                })
+                                save_portfolio(portfolio)
+                                replies.append(f"Added **{t}** — {sh} shares @ {ep} {currency} ({exch}, stop {sl}%)")
                             else:
-                                run_pulse_scan(tkr, pf)
-                        threading.Thread(target=_bg_scan, args=(t, scan_type, portfolio), daemon=True).start()
+                                replies.append(f"Need shares and price for {t or 'that stock'}.")
 
-                    elif act == "show_performance":
-                        dc_chat = st.session_state.get("display_currency", "USD")
-                        lines = [f"**Portfolio Summary — {datetime.now().strftime('%H:%M')}**\n"]
-                        total_val = total_cost = 0.0
-                        for h in portfolio["holdings"]:
-                            native = _native_currency(h)
-                            pr = get_latest_price(h["ticker"], h.get("exchange", "US")) or h["entry_price"]
-                            val_n = h["shares"] * pr
-                            cost_n = h["shares"] * h["entry_price"]
-                            pnl_pct = (val_n - cost_n) / cost_n * 100 if cost_n else 0
-                            total_val += _to_usd(val_n, native)
-                            total_cost += _to_usd(cost_n, native)
-                            lines.append(f"- **{h['ticker']}**: {_fmt(val_n, native, dc_chat)} ({pnl_pct:+.1f}%)")
-                        total_pnl = total_val - total_cost
-                        total_pnl_pct = total_pnl / total_cost * 100 if total_cost else 0
-                        lines.append(
-                            f"\n**Total**: {_fmt(total_val, 'USD', dc_chat)} | "
-                            f"P&L: {_fmt(total_pnl, 'USD', dc_chat)} ({total_pnl_pct:+.1f}%)"
-                        )
-                        reply = "\n".join(lines)
+                        elif act == "remove_stock":
+                            t = (action.get("ticker") or "").upper()
+                            before = len(portfolio["holdings"])
+                            portfolio["holdings"] = [h for h in portfolio["holdings"] if h["ticker"] != t]
+                            save_portfolio(portfolio)
+                            replies.append(
+                                f"Removed **{t}**." if len(portfolio["holdings"]) < before
+                                else f"Couldn't find {t} in your holdings."
+                            )
 
-                    elif act == "answer_question":
-                        reply = action.get("answer", "I'm not sure about that.")
+                        elif act == "add_watchlist":
+                            t = (action.get("ticker") or "").upper()
+                            if t and t not in portfolio.get("watchlist", []):
+                                portfolio.setdefault("watchlist", []).append(t)
+                                save_portfolio(portfolio)
+                                replies.append(f"Added **{t}** to watchlist.")
+                            elif t:
+                                replies.append(f"{t} is already on your watchlist.")
 
-                    else:
-                        clarification = action.get("clarification", "")
-                        reply = (f"I'm not sure what you mean. {clarification}"
-                                 if clarification
-                                 else "Could you rephrase that? I can add/remove stocks, run scans, or answer questions about your portfolio.")
+                        elif act == "run_scan":
+                            t = (action.get("ticker") or "").upper() or None
+                            scan_type = action.get("type", "deep")
+                            label = t or "all holdings"
+                            replies.append(f"Scanning **{label}** ({scan_type})... check Alerts tab shortly.")
+                            def _bg_scan(tkr, stype, pf):
+                                from src.crew import run_deep_scan, run_pulse_scan
+                                h = next((x for x in pf["holdings"] if x["ticker"] == tkr), {}) if tkr else {}
+                                tickers = [tkr] if tkr else [x["ticker"] for x in pf["holdings"]]
+                                for ticker in tickers:
+                                    hh = next((x for x in pf["holdings"] if x["ticker"] == ticker), {})
+                                    if stype == "deep":
+                                        run_deep_scan(ticker, hh, pf)
+                                    else:
+                                        run_pulse_scan(ticker, pf)
+                            threading.Thread(target=_bg_scan, args=(t, scan_type, portfolio), daemon=True).start()
+
+                        elif act == "show_performance":
+                            dc_chat = st.session_state.get("display_currency", "USD")
+                            lines = [f"**Portfolio — {datetime.now().strftime('%H:%M')}**\n"]
+                            total_val = total_cost = 0.0
+                            for h in portfolio["holdings"]:
+                                native = _native_currency(h)
+                                pr = get_latest_price(h["ticker"], h.get("exchange", "US")) or h["entry_price"]
+                                val_n = h["shares"] * pr
+                                cost_n = h["shares"] * h["entry_price"]
+                                pnl_pct = (val_n - cost_n) / cost_n * 100 if cost_n else 0
+                                total_val += _to_usd(val_n, native)
+                                total_cost += _to_usd(cost_n, native)
+                                lines.append(f"- **{h['ticker']}**: {_fmt(val_n, native, dc_chat)} ({pnl_pct:+.1f}%)")
+                            total_pnl = total_val - total_cost
+                            total_pnl_pct = total_pnl / total_cost * 100 if total_cost else 0
+                            lines.append(
+                                f"\n**Total**: {_fmt(total_val, 'USD', dc_chat)} | "
+                                f"P&L: {_fmt(total_pnl, 'USD', dc_chat)} ({total_pnl_pct:+.1f}%)"
+                            )
+                            replies.append("\n".join(lines))
+
+                        elif act == "answer_question":
+                            replies.append(action.get("answer", "I'm not sure about that."))
+
+                        else:
+                            clarification = action.get("clarification", "")
+                            replies.append(
+                                f"Not sure what you mean. {clarification}" if clarification
+                                else "Could you rephrase? I can add/remove stocks, run scans, or answer questions."
+                            )
 
                 except Exception as e:
-                    reply = f"Something went wrong: {str(e)[:100]}"
+                    replies.append(f"Something went wrong: {str(e)[:100]}")
 
-            st.markdown(reply)
-            st.session_state.chat_history.append({"role": "assistant", "content": reply})
+                final_reply = "\n\n".join(replies) if replies else "Done."
+
+            st.markdown(final_reply)
+            st.session_state.chat_history.append({"role": "assistant", "content": final_reply})

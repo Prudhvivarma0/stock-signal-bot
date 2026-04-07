@@ -286,55 +286,80 @@ def _handle_remove(ticker: str, chat_id: str):
         _reply(f"Failed to remove {ticker}: {str(exc)[:150]}", chat_id)
 
 
+def _execute_action(action: dict, chat_id: str):
+    """Execute a single parsed action."""
+    act = action.get("action", "unknown")
+
+    if act == "answer_question":
+        _reply(action.get("answer", "I'm not sure about that."), chat_id)
+
+    elif act == "show_performance":
+        _handle_status(chat_id)
+
+    elif act == "run_scan":
+        t = (action.get("ticker") or "").upper() or None
+        scan_type = action.get("type", "deep")
+        label = t or "all holdings"
+        _reply(f"Starting {scan_type} scan on {label}...", chat_id)
+        threading.Thread(target=_handle_scan, args=(t, chat_id), daemon=True).start()
+
+    elif act == "add_stock":
+        t = (action.get("ticker") or "").upper()
+        sh = float(action.get("shares") or 0)
+        ep = float(action.get("entry_price") or 0)
+        sl = float(action.get("stop_loss_pct") or 8)
+        if t and sh > 0 and ep > 0:
+            _handle_add(t, sh, ep, sl, chat_id)
+        else:
+            _reply(
+                f"Got '{t}' but need shares and price.\n"
+                f"Format: /add {t or 'TICKER'} SHARES PRICE",
+                chat_id,
+            )
+
+    elif act == "remove_stock":
+        t = (action.get("ticker") or "").upper()
+        if t:
+            _handle_remove(t, chat_id)
+        else:
+            _reply("Which stock do you want to remove?", chat_id)
+
+    elif act == "add_watchlist":
+        t = (action.get("ticker") or "").upper()
+        if t:
+            try:
+                import json as _json
+                portfolio = _load_portfolio()
+                if t not in portfolio.get("watchlist", []):
+                    portfolio.setdefault("watchlist", []).append(t)
+                    with open(BASE_DIR / "portfolio.json", "w") as f:
+                        _json.dump(portfolio, f, indent=2)
+                    _reply(f"Added {t} to your watchlist.", chat_id)
+                else:
+                    _reply(f"{t} is already on your watchlist.", chat_id)
+            except Exception as exc:
+                _reply(f"Failed: {exc}", chat_id)
+
+    else:
+        clarification = action.get("clarification", "")
+        _reply(
+            (f"Not sure what you mean. {clarification}" if clarification
+             else "Try /help to see what I can do."),
+            chat_id,
+        )
+
+
 def _handle_chat(text: str, chat_id: str):
+    """Route free-form text through the AI chat agent, execute all returned actions."""
     try:
         from src.crew import run_chat_command
         from src.database import init_db
         init_db()
         portfolio = _load_portfolio()
-        action = run_chat_command(text, portfolio)
-        act = action.get("action", "unknown")
-
-        if act == "answer_question":
-            _reply(action.get("answer", "I'm not sure about that."), chat_id)
-        elif act == "show_performance":
-            _handle_status(chat_id)
-        elif act == "run_scan":
-            t = action.get("ticker", "").upper()
-            scan_type = action.get("type", "deep")
-            if t:
-                _reply(f"Starting {scan_type} scan on {t}...", chat_id)
-                threading.Thread(target=_handle_scan, args=(t, chat_id), daemon=True).start()
-            else:
-                _reply("Which stock do you want me to scan?", chat_id)
-        elif act == "add_stock":
-            t = action.get("ticker", "").upper()
-            sh = float(action.get("shares", 0) or 0)
-            ep = float(action.get("entry_price", 0) or 0)
-            sl = float(action.get("stop_loss_pct", 8) or 8)
-            if t and sh > 0 and ep > 0:
-                _handle_add(t, sh, ep, sl, chat_id)
-            else:
-                _reply(
-                    f"I understood you want to add {t or 'a stock'} but need shares and price.\n"
-                    f"Use: /add {t or 'TICKER'} SHARES PRICE",
-                    chat_id,
-                )
-        elif act == "remove_stock":
-            t = action.get("ticker", "").upper()
-            if t:
-                _handle_remove(t, chat_id)
-            else:
-                _reply("Which stock do you want to remove?", chat_id)
-        else:
-            clarification = action.get("clarification", "")
-            _reply(
-                (f"I'm not sure what you mean. {clarification}"
-                 if clarification
-                 else "Try /help to see what I can do."),
-                chat_id,
-            )
-
+        actions = run_chat_command(text, portfolio)
+        log.info("Chat parsed %d action(s) from: %s", len(actions), text[:80])
+        for action in actions:
+            _execute_action(action, chat_id)
     except Exception as exc:
         log.error("Telegram chat error: %s", exc)
         _reply(f"Something went wrong: {str(exc)[:150]}", chat_id)

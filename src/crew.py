@@ -351,18 +351,27 @@ def run_pulse_scan(ticker: str, portfolio: dict) -> dict:
     return result
 
 
-def run_chat_command(user_message: str, portfolio: dict) -> dict:
-    """Parse a natural language command and return a structured action dict."""
+def run_chat_command(user_message: str, portfolio: dict) -> list:
+    """Parse a natural language command and return a list of actions to execute."""
     try:
         task = tk.chat_command_task(user_message, portfolio)
         out = _groq_with_backoff(lambda: Crew(
             agents=[ag.chat_agent()], tasks=[task],
             process=Process.sequential, verbose=False,
         ))
-        return _safe_json(str(out))
+        raw = str(out).strip()
+        # Strip markdown fences if present
+        if raw.startswith("```"):
+            lines = raw.split("\n")
+            raw = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+        parsed = json.loads(raw)
+        # Normalise: agent may return a single object or a list
+        if isinstance(parsed, dict):
+            return [parsed]
+        return parsed
     except Exception as exc:
         log.error("chat_command: %s", exc)
-        return {"action": "unknown", "clarification": str(exc)}
+        return [{"action": "unknown", "clarification": str(exc)}]
 
 
 def run_weekly_debrief(portfolio: dict) -> None:
