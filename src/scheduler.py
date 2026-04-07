@@ -58,17 +58,21 @@ def loop_a_pulse():
 
 # ── Loop B: Deep research twice daily ────────────────────────────────────────
 def loop_b_deep():
+    """Deep scan cycle — one stock every 10 minutes to stay within API rate limits."""
     try:
         portfolio = _load_portfolio()
         tickers = _all_tickers(portfolio)
-        log.info("Starting deep scan cycle — %d tickers", len(tickers))
-        for ticker in tickers:
+        log.info("Starting deep scan cycle — %d tickers, 10 min apart", len(tickers))
+        for i, ticker in enumerate(tickers):
             holding = _get_holding(portfolio, ticker)
             try:
                 run_deep_scan(ticker, holding, portfolio)
             except Exception as exc:
                 log.error("Deep scan %s: %s", ticker, exc)
-            time.sleep(10)
+            # Wait 10 minutes between stocks (not after the last one)
+            if i < len(tickers) - 1:
+                log.info("Waiting 10 minutes before scanning %s...", tickers[i + 1])
+                time.sleep(600)
     except Exception as exc:
         log.error("Loop B error: %s", exc)
 

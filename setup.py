@@ -82,9 +82,16 @@ def detect_exchange(ticker: str) -> str:
     # yfinance fallback for US stocks
     try:
         import yfinance as yf
+        # Try UAE format first (.AE suffix)
+        info_ae = yf.Ticker(f"{t}.AE").info or {}
+        if info_ae.get("regularMarketPrice") or info_ae.get("previousClose"):
+            return "DFM"
         info = yf.Ticker(t).info or {}
         exch = (info.get("exchange") or "").upper()
         full = (info.get("fullExchangeName") or "").upper()
+        curr = (info.get("currency") or "").upper()
+        if curr == "AED":
+            return "DFM"
         if "NASDAQ" in exch or "NASDAQ" in full or "NMS" in exch:
             return "NASDAQ"
         if "NYSE" in exch or "NYSE" in full or "NYQ" in exch:

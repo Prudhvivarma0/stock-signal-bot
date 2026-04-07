@@ -18,6 +18,7 @@ load_dotenv(BASE_DIR / ".env")
 
 from src.database import init_db, get_recent_alerts, get_latest_scan
 from src.chart_data import get_portfolio_history, get_stock_candles, get_latest_price, get_sparkline
+from src.tools.uae_data import is_uae, aed_to_usd, usd_to_aed, AED_USD_RATE
 
 PORTFOLIO_PATH = BASE_DIR / "portfolio.json"
 
@@ -43,6 +44,30 @@ def load_portfolio() -> dict:
 def save_portfolio(p: dict):
     with open(PORTFOLIO_PATH, "w") as f:
         json.dump(p, f, indent=2)
+
+
+def _native_currency(holding: dict) -> str:
+    """USD for NASDAQ/NYSE, AED for DFM/ADX."""
+    return holding.get("currency") or ("AED" if is_uae(holding.get("exchange", "")) else "USD")
+
+
+def _to_usd(amount: float, currency: str) -> float:
+    """Convert any amount to USD."""
+    return aed_to_usd(amount) if currency == "AED" else amount
+
+
+def _fmt(amount: float, native_currency: str, display_currency: str, decimals: int = 2) -> str:
+    """Format amount, converting to display_currency if needed."""
+    if display_currency == "AED" and native_currency == "USD":
+        amount = usd_to_aed(amount)
+        return f"AED {amount:,.{decimals}f}"
+    elif display_currency == "USD" and native_currency == "AED":
+        amount = aed_to_usd(amount)
+        return f"${amount:,.{decimals}f}"
+    elif display_currency == "AED":
+        return f"AED {amount:,.{decimals}f}"
+    else:
+        return f"${amount:,.{decimals}f}"
 
 
 # ── Custom CSS ────────────────────────────────────────────────────────────────
@@ -83,68 +108,91 @@ tab_portfolio, tab_performance, tab_alerts, tab_chat = st.tabs([
 # TAB 1 — PORTFOLIO
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_portfolio:
-    st.markdown(
-        f"### {name}'s Portfolio &nbsp;&nbsp;"
-        f"<small style='color:#64748b'>Updated: {datetime.now().strftime('%H:%M:%S')}</small>",
-        unsafe_allow_html=True
-    )
+    # ── Currency toggle ───────────────────────────────────────────────────────
+    col_title, col_toggle = st.columns([5, 1])
+    with col_title:
+        st.markdown(
+            f"### {name}'s Portfolio &nbsp;&nbsp;"
+            f"<small style='color:#64748b'>Updated: {datetime.now().strftime('%H:%M:%S')}</small>",
+            unsafe_allow_html=True
+        )
+    with col_toggle:
+        if "display_currency" not in st.session_state:
+            st.session_state.display_currency = "USD"
+        dc_choice = st.radio(
+            "Display in", ["USD", "AED"],
+            index=0 if st.session_state.display_currency == "USD" else 1,
+            horizontal=True, label_visibility="collapsed",
+        )
+        st.session_state.display_currency = dc_choice
+        st.caption(f"1 USD = {AED_USD_RATE} AED")
+
+    dc = st.session_state.display_currency
 
     # ── Summary bar ──────────────────────────────────────────────────────────
-    total_invested = total_current = 0.0
+    total_invested_usd = total_current_usd = 0.0
     best_ticker, best_pct, worst_ticker, worst_pct = "", -999.0, "", 999.0
-    holding_prices = {}
+    holding_prices = {}  # ticker → price in native currency
 
     for h in holdings:
         ticker = h["ticker"]
+        exchange = h.get("exchange", "US")
         shares = h.get("shares", 0)
         entry = h.get("entry_price", 0)
-        price = get_latest_price(ticker) or entry
-        holding_prices[ticker] = price
-        invested = shares * entry
-        current = shares * price
-        total_invested += invested
-        total_current += current
-        if invested > 0:
-            pct = (current - invested) / invested * 100
-            if pct > best_pct: best_pct, best_ticker = pct, ticker
-            if pct < worst_pct: worst_pct, worst_ticker = pct, ticker
+        native = _native_currency(h)
 
-    total_pnl = total_current - total_invested
-    total_pnl_pct = (total_pnl / total_invested * 100) if total_invested else 0
+        price = get_latest_price(ticker, exchange) or entry
+        holding_prices[ticker] = price
+
+        invested_usd = _to_usd(shares * entry, native)
+        current_usd = _to_usd(shares * price, native)
+        total_invested_usd += invested_usd
+        total_current_usd += current_usd
+
+        if invested_usd > 0:
+            pct = (current_usd - invested_usd) / invested_usd * 100
+            if pct > best_pct:
+                best_pct, best_ticker = pct, ticker
+            if pct < worst_pct:
+                worst_pct, worst_ticker = pct, ticker
+
+    total_pnl_usd = total_current_usd - total_invested_usd
+    total_pnl_pct = (total_pnl_usd / total_invested_usd * 100) if total_invested_usd else 0
 
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("💰 Invested", f"${total_invested:,.2f}")
-    c2.metric("📦 Current Value", f"${total_current:,.2f}")
-    c3.metric("📊 Total P&L", f"${total_pnl:+,.2f}",
+    c1.metric("Invested", _fmt(total_invested_usd, "USD", dc))
+    c2.metric("Current Value", _fmt(total_current_usd, "USD", dc))
+    c3.metric("Total P&L", _fmt(total_pnl_usd, "USD", dc),
               delta=f"{total_pnl_pct:+.2f}%", delta_color="normal")
-    c4.metric("🚀 Best", best_ticker or "—",
+    c4.metric("Best", best_ticker or "—",
               delta=f"{best_pct:+.1f}%" if best_ticker else None)
-    c5.metric("📉 Worst", worst_ticker or "—",
+    c5.metric("Worst", worst_ticker or "—",
               delta=f"{worst_pct:+.1f}%" if worst_ticker else None, delta_color="inverse")
 
     st.divider()
 
     # ── Add stock inline ──────────────────────────────────────────────────────
-    with st.expander("➕ Add a Stock to Portfolio"):
+    with st.expander("Add a Stock to Portfolio"):
         col_a, col_b, col_c, col_d, col_e = st.columns([2, 1.5, 1.5, 1.5, 1])
-        new_ticker = col_a.text_input("Ticker", placeholder="e.g. TSLA").upper().strip()
+        new_ticker = col_a.text_input("Ticker", placeholder="e.g. TSLA or SALIK").upper().strip()
         new_shares = col_b.number_input("Shares", min_value=0.0, step=0.001, format="%.3f")
         new_price = col_c.number_input("Avg Entry Price", min_value=0.0, step=0.01, format="%.4f")
         new_stop = col_d.number_input("Stop Loss %", min_value=1.0, max_value=99.0, value=8.0, step=0.5)
         if col_e.button("Add", use_container_width=True) and new_ticker and new_shares > 0 and new_price > 0:
             from src.tools.yfinance_tools import estimate_entry_date
-            from src.setup import detect_exchange
+            from setup import detect_exchange
             exchange = detect_exchange(new_ticker)
             entry_date = estimate_entry_date(new_ticker, new_price)
+            currency = "AED" if is_uae(exchange) else "USD"
             holdings.append({
-                "ticker": new_ticker, "exchange": exchange,
+                "ticker": new_ticker, "exchange": exchange, "currency": currency,
                 "shares": float(new_shares), "entry_price": float(new_price),
                 "entry_date_estimated": entry_date, "stop_loss_pct": float(new_stop),
                 "thesis": "", "screenshot_path": "",
             })
             portfolio["holdings"] = holdings
             save_portfolio(portfolio)
-            st.success(f"✓ {new_ticker} added ({exchange})")
+            st.success(f"Added {new_ticker} ({exchange}, {currency})")
             st.rerun()
 
     # ── Holdings ──────────────────────────────────────────────────────────────
@@ -161,11 +209,12 @@ with tab_portfolio:
         stop_price = round(entry * (1 - stop_pct / 100), 4)
         entry_date = h.get("entry_date_estimated", "")
         exchange = h.get("exchange", "US")
+        native = _native_currency(h)
 
         current_price = holding_prices.get(ticker, entry)
-        pnl_usd = (current_price - entry) * shares
+        pnl_native = (current_price - entry) * shares
         pnl_pct = (current_price - entry) / entry * 100 if entry else 0
-        pnl_color = "🟢" if pnl_usd >= 0 else "🔴"
+        pnl_color = "🟢" if pnl_native >= 0 else "🔴"
 
         scan = get_latest_scan(ticker)
         signal_label = ""
@@ -175,16 +224,22 @@ with tab_portfolio:
             if sig:
                 signal_label = f" · {sig}"
 
-        label = (f"{pnl_color} **{ticker}** — {shares} shares @ ${entry}"
-                 f"  |  ${current_price:.4f}  |  {'+' if pnl_usd>=0 else ''}{pnl_pct:.2f}%{signal_label}")
+        # Label always shows native currency
+        price_str = _fmt(current_price, native, native, decimals=4)
+        pnl_str = _fmt(abs(pnl_native), native, native)
+        pnl_sign = "+" if pnl_native >= 0 else "-"
+        label = (f"{pnl_color} **{ticker}** ({native}) — {shares} shares @ {_fmt(entry, native, native, 4)}"
+                 f"  |  {price_str}  |  {pnl_sign}{pnl_pct:.2f}%{signal_label}")
 
         with st.expander(label, expanded=True):
             m1, m2, m3, m4, m5 = st.columns(5)
-            m1.metric("Entry", f"${entry:.4f}")
-            m2.metric("Current", f"${current_price:.4f}")
-            m3.metric("P&L", f"${pnl_usd:+,.2f}", delta=f"{pnl_pct:+.2f}%")
-            m4.metric("Stop Loss", f"${stop_price:.4f}", delta=f"-{stop_pct}%", delta_color="inverse")
-            m5.metric("Exchange", exchange)
+            m1.metric("Entry", _fmt(entry, native, dc, 4))
+            m2.metric("Current", _fmt(current_price, native, dc, 4))
+            m3.metric("P&L", _fmt(pnl_native, native, dc),
+                      delta=f"{pnl_pct:+.2f}%")
+            m4.metric("Stop Loss", _fmt(stop_price, native, dc, 4),
+                      delta=f"-{stop_pct}%", delta_color="inverse")
+            m5.metric("Exchange", f"{exchange} ({native})")
 
             # Timeframe buttons
             tf_key = f"tf_{ticker}"
@@ -200,6 +255,22 @@ with tab_portfolio:
             if not candle_df.empty:
                 candle_df.columns = [str(c).lower() for c in candle_df.columns]
                 date_col = next((c for c in candle_df.columns if "date" in c), candle_df.columns[0])
+
+                # If display currency differs from native, convert OHLC
+                price_cols = ["open", "high", "low", "close"]
+                if dc != native:
+                    for col in price_cols:
+                        if col in candle_df.columns:
+                            if dc == "USD" and native == "AED":
+                                candle_df[col] = candle_df[col] / AED_USD_RATE
+                            elif dc == "AED" and native == "USD":
+                                candle_df[col] = candle_df[col] * AED_USD_RATE
+                    entry_disp = aed_to_usd(entry) if (dc == "USD" and native == "AED") else usd_to_aed(entry)
+                    stop_disp = aed_to_usd(stop_price) if (dc == "USD" and native == "AED") else usd_to_aed(stop_price)
+                else:
+                    entry_disp, stop_disp = entry, stop_price
+
+                y_prefix = "AED " if dc == "AED" else "$"
 
                 fig = go.Figure()
                 fig.add_trace(go.Candlestick(
@@ -219,11 +290,11 @@ with tab_portfolio:
                         fig.add_trace(go.Scatter(x=candle_df[date_col], y=candle_df["sma50"],
                                                 name="SMA50", line=dict(color="#a78bfa", width=1)))
 
-                fig.add_hline(y=entry, line=dict(color="#fb923c", dash="dash", width=1.5),
-                              annotation_text=f"Entry ${entry:.2f}",
+                fig.add_hline(y=entry_disp, line=dict(color="#fb923c", dash="dash", width=1.5),
+                              annotation_text=f"Entry {y_prefix}{entry_disp:.2f}",
                               annotation_font=dict(color="#fb923c"))
-                fig.add_hline(y=stop_price, line=dict(color="#f87171", dash="dash", width=1.5),
-                              annotation_text=f"Stop ${stop_price:.2f}",
+                fig.add_hline(y=stop_disp, line=dict(color="#f87171", dash="dash", width=1.5),
+                              annotation_text=f"Stop {y_prefix}{stop_disp:.2f}",
                               annotation_font=dict(color="#f87171"))
                 if entry_date and len(str(entry_date)) >= 10:
                     fig.add_vline(x=str(entry_date)[:10], line=dict(color="#fb923c", dash="dot", width=1))
@@ -233,7 +304,8 @@ with tab_portfolio:
                     margin=dict(l=0, r=0, t=10, b=0),
                     paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                     xaxis=dict(gridcolor="rgba(255,255,255,0.05)", color="#94a3b8"),
-                    yaxis=dict(gridcolor="rgba(255,255,255,0.05)", tickprefix="$", color="#94a3b8"),
+                    yaxis=dict(gridcolor="rgba(255,255,255,0.05)",
+                               tickprefix=y_prefix, color="#94a3b8"),
                     legend=dict(orientation="h", y=1.08, font=dict(size=11)),
                 )
                 st.plotly_chart(fig, use_container_width=True)
@@ -251,16 +323,14 @@ with tab_portfolio:
             else:
                 st.warning(f"No price data for {ticker} ({current_tf})")
 
-            # Latest research signal
             if scan:
                 st.markdown(
-                    f"**🔍 Last scan** `{str(scan['scan_time'])[:16]}` — {scan['summary'][:200]}"
+                    f"**Last scan** `{str(scan['scan_time'])[:16]}` — {scan['summary'][:200]}"
                 )
             else:
                 st.caption("No research scan yet — run `python main.py --deep` to start.")
 
-            # Remove button
-            if st.button(f"🗑 Remove {ticker}", key=f"rm_{ticker}"):
+            if st.button(f"Remove {ticker}", key=f"rm_{ticker}"):
                 portfolio["holdings"] = [x for x in portfolio["holdings"] if x["ticker"] != ticker]
                 save_portfolio(portfolio)
                 st.rerun()
@@ -311,7 +381,6 @@ with tab_performance:
 
     port_df = get_portfolio_history(sel_tf)
     if not port_df.empty:
-        # P&L line chart
         port_df["pnl"] = port_df["total_value"] - port_df["total_invested"]
         port_df["pnl_pct"] = port_df["pnl"] / port_df["total_invested"] * 100
 
@@ -320,11 +389,6 @@ with tab_performance:
             x=port_df["date"], y=port_df["total_invested"],
             name="Invested", line=dict(color="#64748b", dash="dash"),
         ))
-        above = port_df["total_value"].copy()
-        below = port_df["total_value"].copy()
-        above[above < port_df["total_invested"]] = None
-        below[below > port_df["total_invested"]] = None
-
         fig_pf.add_trace(go.Scatter(
             x=port_df["date"], y=port_df["total_value"],
             name="Portfolio Value", line=dict(color="#e2e8f0", width=2),
@@ -339,13 +403,10 @@ with tab_performance:
         )
         st.plotly_chart(fig_pf, use_container_width=True)
 
-        # P&L % chart
         fig_pnl = go.Figure(go.Scatter(
             x=port_df["date"], y=port_df["pnl_pct"],
-            fill="tozeroy",
-            fillcolor="rgba(74,222,128,0.1)",
-            line=dict(color="#4ade80", width=2),
-            name="P&L %",
+            fill="tozeroy", fillcolor="rgba(74,222,128,0.1)",
+            line=dict(color="#4ade80", width=2), name="P&L %",
         ))
         fig_pnl.add_hline(y=0, line=dict(color="#64748b", width=1))
         fig_pnl.update_layout(
@@ -356,20 +417,27 @@ with tab_performance:
         )
         st.plotly_chart(fig_pnl, use_container_width=True)
 
-        # Per-holding performance
         st.markdown("#### Individual Performance")
+        dc = st.session_state.get("display_currency", "USD")
         perf_data = []
         for h in holdings:
             t = h["ticker"]
-            pr = get_latest_price(t) or h.get("entry_price", 0)
-            cost = h["shares"] * h["entry_price"]
-            val = h["shares"] * pr
+            native = _native_currency(h)
+            pr = get_latest_price(t, h.get("exchange", "US")) or h.get("entry_price", 0)
+            cost_n = h["shares"] * h["entry_price"]
+            val_n = h["shares"] * pr
+            cost_d = _fmt(cost_n, native, dc)
+            val_d = _fmt(val_n, native, dc)
+            pnl_n = val_n - cost_n
+            pnl_pct = pnl_n / cost_n * 100 if cost_n else 0
             perf_data.append({
-                "Ticker": t, "Shares": h["shares"],
-                "Entry": f"${h['entry_price']:.4f}", "Current": f"${pr:.4f}",
-                "Cost": f"${cost:,.2f}", "Value": f"${val:,.2f}",
-                "P&L $": f"${val-cost:+,.2f}",
-                "P&L %": f"{(val-cost)/cost*100:+.2f}%" if cost else "—",
+                "Ticker": t, "Exchange": h.get("exchange", ""),
+                "Shares": h["shares"],
+                "Entry": _fmt(h["entry_price"], native, dc, 4),
+                "Current": _fmt(pr, native, dc, 4),
+                "Cost": cost_d, "Value": val_d,
+                "P&L": _fmt(pnl_n, native, dc),
+                "P&L %": f"{pnl_pct:+.2f}%" if cost_n else "—",
             })
         if perf_data:
             st.dataframe(pd.DataFrame(perf_data), use_container_width=True, hide_index=True)
@@ -389,7 +457,6 @@ with tab_alerts:
                      "HOLD_SIGNAL": "🔵", "WEEKLY_DEBRIEF": "📊", "SIGNAL": "⚪"}
             icon = icons.get(atype, "⚪")
             with st.expander(f"{icon} **{tkr}** — {atype} — {str(ts)[:16]}"):
-                # Parse and display structured sections
                 text = msg
                 for section in ["SITUATION", "BULL CASE", "BEAR CASE",
                                  "PROBABILITY WEIGHTED VIEW", "WHAT TO WATCH"]:
@@ -422,19 +489,17 @@ with tab_chat:
         st.session_state.chat_history = [
             {"role": "assistant", "content":
              f"Hey {name}! I'm monitoring your portfolio. You can tell me things like:\n"
-             "• *'I bought 5 shares of TSLA at $220'*\n"
-             "• *'Run a deep scan on NVDA'*\n"
-             "• *'How is my portfolio doing?'*\n"
-             "• *'Add AAPL to my watchlist'*\n"
-             "• *'Remove SALIK from holdings'*"}
+             "- *'I bought 5 shares of TSLA at $220'*\n"
+             "- *'Run a deep scan on NVDA'*\n"
+             "- *'How is my portfolio doing?'*\n"
+             "- *'Add AAPL to my watchlist'*\n"
+             "- *'Remove SALIK from holdings'*"}
         ]
 
-    # Display chat history
     for msg in st.session_state.chat_history:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # Chat input
     user_input = st.chat_input("Message your assistant...")
     if user_input:
         st.session_state.chat_history.append({"role": "user", "content": user_input})
@@ -459,37 +524,41 @@ with tab_chat:
                             from setup import detect_exchange
                             exch = detect_exchange(t)
                             edate = estimate_entry_date(t, ep)
+                            currency = "AED" if is_uae(exch) else "USD"
                             portfolio["holdings"] = [h for h in portfolio["holdings"] if h["ticker"] != t]
                             portfolio["holdings"].append({
-                                "ticker": t, "exchange": exch, "shares": sh,
-                                "entry_price": ep, "entry_date_estimated": edate,
+                                "ticker": t, "exchange": exch, "currency": currency,
+                                "shares": sh, "entry_price": ep,
+                                "entry_date_estimated": edate,
                                 "stop_loss_pct": sl, "thesis": "", "screenshot_path": "",
                             })
                             save_portfolio(portfolio)
-                            reply = f"✅ Added **{t}** — {sh} shares @ ${ep} (exchange: {exch}, stop: {sl}%)"
+                            reply = f"Added **{t}** — {sh} shares @ {ep} {currency} (exchange: {exch}, stop: {sl}%)"
                         else:
-                            reply = f"I need ticker, shares, and entry price. Could you confirm those?"
+                            reply = "I need ticker, shares, and entry price. Could you confirm those?"
 
                     elif act == "remove_stock":
                         t = action.get("ticker", "").upper()
                         before = len(portfolio["holdings"])
                         portfolio["holdings"] = [h for h in portfolio["holdings"] if h["ticker"] != t]
                         save_portfolio(portfolio)
-                        reply = f"✅ Removed **{t}** from portfolio." if len(portfolio["holdings"]) < before else f"Couldn't find {t} in your holdings."
+                        reply = (f"Removed **{t}** from portfolio."
+                                 if len(portfolio["holdings"]) < before
+                                 else f"Couldn't find {t} in your holdings.")
 
                     elif act == "add_watchlist":
                         t = action.get("ticker", "").upper()
                         if t and t not in portfolio.get("watchlist", []):
                             portfolio.setdefault("watchlist", []).append(t)
                             save_portfolio(portfolio)
-                            reply = f"✅ Added **{t}** to your watchlist."
+                            reply = f"Added **{t}** to your watchlist."
                         else:
                             reply = f"{t} is already on your watchlist."
 
                     elif act == "run_scan":
                         t = action.get("ticker", "").upper()
                         scan_type = action.get("type", "pulse")
-                        reply = f"🔍 Kicking off a {scan_type} scan on **{t}**... check the Alerts tab in a few minutes."
+                        reply = f"Kicking off a {scan_type} scan on **{t}**... check the Alerts tab in a few minutes."
                         import threading
                         def _bg_scan(tkr, stype, pf):
                             from src.crew import run_deep_scan, run_pulse_scan
@@ -501,14 +570,24 @@ with tab_chat:
                         threading.Thread(target=_bg_scan, args=(t, scan_type, portfolio), daemon=True).start()
 
                     elif act == "show_performance":
-                        lines = [f"**Portfolio Summary as of {datetime.now().strftime('%H:%M')}**\n"]
+                        dc_chat = st.session_state.get("display_currency", "USD")
+                        lines = [f"**Portfolio Summary — {datetime.now().strftime('%H:%M')}**\n"]
+                        total_val = total_cost = 0.0
                         for h in portfolio["holdings"]:
-                            pr = get_latest_price(h["ticker"]) or h["entry_price"]
-                            val = h["shares"] * pr
-                            cost = h["shares"] * h["entry_price"]
-                            pnl_pct = (val - cost) / cost * 100 if cost else 0
-                            lines.append(f"• **{h['ticker']}**: ${val:,.2f} ({pnl_pct:+.1f}%)")
-                        lines.append(f"\n**Total**: ${total_current:,.2f} | P&L: ${total_pnl:+,.2f} ({total_pnl_pct:+.1f}%)")
+                            native = _native_currency(h)
+                            pr = get_latest_price(h["ticker"], h.get("exchange", "US")) or h["entry_price"]
+                            val_n = h["shares"] * pr
+                            cost_n = h["shares"] * h["entry_price"]
+                            pnl_pct = (val_n - cost_n) / cost_n * 100 if cost_n else 0
+                            total_val += _to_usd(val_n, native)
+                            total_cost += _to_usd(cost_n, native)
+                            lines.append(f"- **{h['ticker']}**: {_fmt(val_n, native, dc_chat)} ({pnl_pct:+.1f}%)")
+                        total_pnl = total_val - total_cost
+                        total_pnl_pct = total_pnl / total_cost * 100 if total_cost else 0
+                        lines.append(
+                            f"\n**Total**: {_fmt(total_val, 'USD', dc_chat)} | "
+                            f"P&L: {_fmt(total_pnl, 'USD', dc_chat)} ({total_pnl_pct:+.1f}%)"
+                        )
                         reply = "\n".join(lines)
 
                     elif act == "answer_question":
@@ -516,7 +595,9 @@ with tab_chat:
 
                     else:
                         clarification = action.get("clarification", "")
-                        reply = f"I'm not sure what you mean. {clarification}" if clarification else "Could you rephrase that? I can add/remove stocks, run scans, or answer questions about your portfolio."
+                        reply = (f"I'm not sure what you mean. {clarification}"
+                                 if clarification
+                                 else "Could you rephrase that? I can add/remove stocks, run scans, or answer questions about your portfolio.")
 
                 except Exception as e:
                     reply = f"Something went wrong: {str(e)[:100]}"

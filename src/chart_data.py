@@ -32,38 +32,26 @@ def get_portfolio_history(timeframe: str = "ALL") -> pd.DataFrame:
 
 def get_stock_candles(ticker: str, timeframe: str = "1M", exchange: str = "US") -> pd.DataFrame:
     """Returns OHLCV dataframe for candlestick chart."""
-    import os
-    days = TIMEFRAME_DAYS.get(timeframe, 30)
+    from src.tools.uae_data import is_uae, yf_ticker as uae_yf_ticker, get_uae_history
+    period_map = {"1D": "1d", "1W": "5d", "1M": "1mo", "3M": "3mo", "6M": "6mo", "ALL": "5y"}
     interval = TIMEFRAME_INTERVAL.get(timeframe, "1d")
+    period = period_map.get(timeframe, "1mo")
 
-    # UAE stocks via EODHD if available
-    eodhd_key = os.getenv("EODHD_API_KEY", "")
-    if exchange in ("DFM", "ADX") and eodhd_key:
+    # UAE stocks — use .AE suffix via yfinance
+    if is_uae(exchange):
         try:
-            import requests
-            from_dt = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-            to_dt = datetime.now().strftime("%Y-%m-%d")
-            r = requests.get(
-                f"https://eodhd.com/api/eod/{ticker}.{exchange}",
-                params={"api_token": eodhd_key, "from": from_dt, "to": to_dt, "fmt": "json"},
-                timeout=15,
-            )
-            r.raise_for_status()
-            data = r.json()
-            df = pd.DataFrame(data)
+            df = get_uae_history(ticker, exchange, period=period, interval=interval)
             if not df.empty:
-                df["date"] = pd.to_datetime(df["date"])
-                df.rename(columns={"open": "Open", "high": "High", "low": "Low",
-                                   "close": "Close", "volume": "Volume"}, inplace=True)
+                df.columns = [str(c).split("_")[0] if isinstance(c, tuple) else str(c) for c in df.columns]
+                df.rename(columns={"Datetime": "date", "Date": "date"}, inplace=True)
                 return df
         except Exception as exc:
-            log.warning("EODHD failed for %s: %s — falling back to yfinance", ticker, exc)
+            log.warning("UAE candles failed for %s: %s", ticker, exc)
 
-    # Fallback: yfinance
+    # US stocks — standard yfinance
     try:
-        period_map = {"1D": "1d", "1W": "5d", "1M": "1mo", "3M": "3mo", "6M": "6mo", "ALL": "5y"}
-        period = period_map.get(timeframe, "1mo")
-        df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=True)
+        sym = ticker
+        df = yf.download(sym, period=period, interval=interval, progress=False, auto_adjust=True)
         if df.empty:
             return pd.DataFrame()
         df = df.reset_index()
@@ -74,17 +62,19 @@ def get_stock_candles(ticker: str, timeframe: str = "1M", exchange: str = "US") 
         return pd.DataFrame()
 
 
-def get_latest_price(ticker: str) -> float | None:
+def get_latest_price(ticker: str, exchange: str = "US") -> float | None:
     """Get latest price — first from DB cache, then live."""
+    from src.tools.uae_data import is_uae, get_uae_price
     try:
         rows = get_price_history(ticker, days=1)
         if rows:
-            # most recent
             latest = sorted(rows, key=lambda x: x[0], reverse=True)[0]
             return latest[1]
     except Exception:
         pass
     try:
+        if is_uae(exchange):
+            return get_uae_price(ticker, exchange)
         from src.tools.yfinance_tools import get_latest_price as live_price
         return live_price(ticker)
     except Exception as exc:

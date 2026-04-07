@@ -1,6 +1,7 @@
 """CrewAI crew orchestration for stock research."""
 import json
 import logging
+import os
 import time
 from datetime import datetime
 
@@ -9,17 +10,18 @@ from crewai import Crew, Process
 from src import agents as ag, tasks as tk
 from src.database import (
     save_scan, save_alert, was_alert_sent_recently,
-    save_sentiment, get_sentiment_baseline,
+    save_sentiment, get_cached_scan,
 )
 from src.tools.telegram_tool import send_alert
 
 log = logging.getLogger(__name__)
 
+CACHE_HOURS = 6  # skip re-run if data is younger than this
+
 
 def _safe_json(text: str) -> dict:
     """Try to extract JSON from agent output."""
     try:
-        # strip markdown code fences
         cleaned = text.strip()
         if cleaned.startswith("```"):
             lines = cleaned.split("\n")
@@ -29,173 +31,209 @@ def _safe_json(text: str) -> dict:
         return {"raw_text": text[:500]}
 
 
-def _groq_with_backoff(crew_run_fn, max_retries: int = 3):
-    """Run a crew function with exponential backoff on 429s."""
+def _groq_with_backoff(crew_factory, max_retries: int = 3):
+    """Run a crew with exponential backoff and automatic Gemini fallback on 429.
+
+    crew_factory: callable that returns a fresh Crew instance (rebuilt on each attempt,
+    so agents pick up the fallback flag if it gets activated mid-retry).
+    """
+    gemini_available = bool(os.getenv("GEMINI_API_KEY", ""))
+
     for attempt in range(max_retries):
         try:
-            return crew_run_fn()
+            # On the final attempt, activate Gemini fallback if Groq kept 429-ing
+            if attempt == max_retries - 1 and gemini_available and not ag._FALLBACK_ACTIVE:
+                log.warning("Groq rate limit persists — activating Gemini fallback")
+                ag.set_fallback(True)
+
+            crew = crew_factory()
+            return crew.kickoff()
+
         except Exception as exc:
-            if "429" in str(exc) or "rate_limit" in str(exc).lower():
-                wait = 60 * (2 ** attempt)
-                log.warning("Groq rate limit, waiting %ds (attempt %d/%d)", wait, attempt + 1, max_retries)
+            err = str(exc)
+            is_rate_limit = "429" in err or "rate_limit" in err.lower() or "quota" in err.lower()
+
+            if is_rate_limit and attempt < max_retries - 1:
+                wait = 60 * (2 ** attempt)  # 60s, 120s, ...
+                log.warning("Rate limit (attempt %d/%d) — waiting %ds", attempt + 1, max_retries, wait)
                 time.sleep(wait)
             else:
                 raise
-    raise RuntimeError("Max retries exceeded for Groq API")
+
+    raise RuntimeError("Max retries exceeded for LLM API")
+
+
+def _run_agent(ticker: str, agent_name: str, crew_factory, *, save_fn=None, cache_hours: int = CACHE_HOURS):
+    """Check cache, run agent if stale, save result.
+
+    Returns the raw output string (JSON or text).
+    """
+    cached = get_cached_scan(ticker, agent_name, max_age_hours=cache_hours)
+    if cached and cached.get("raw_text") is None:
+        log.info("Cache hit (%dh): %s / %s", cache_hours, ticker, agent_name)
+        return json.dumps(cached)
+
+    out = _groq_with_backoff(crew_factory)
+    result_str = str(out)
+    data = _safe_json(result_str)
+
+    if save_fn:
+        save_fn(data)
+    else:
+        save_scan(ticker, agent_name, data.get("reasoning", "")[:500],
+                  data.get("flags", []), data)
+
+    time.sleep(3)  # gentle rate-limit buffer between agents
+    return result_str
 
 
 def run_deep_scan(ticker: str, holding: dict, portfolio: dict) -> dict:
-    """Run full 6-agent + manager scan on a single ticker."""
+    """Run full 6-agent + bull/bear + risk + manager scan on a single ticker."""
     company_name = holding.get("company_name", "") if holding else ""
     log.info("Starting deep scan: %s", ticker)
 
+    # Reset Gemini fallback at the start of each stock scan
+    ag.set_fallback(False)
+
     results = {}
 
-    # --- Agent 1: Fundamentals ---
+    # ── Agent 1: Fundamentals ──────────────────────────────────────────────────
     try:
-        crew1 = Crew(
-            agents=[ag.fundamentals_agent()],
-            tasks=[tk.fundamentals_task(ticker, holding)],
-            process=Process.sequential,
-            verbose=False,
+        results["fundamentals"] = _run_agent(
+            ticker, "fundamentals",
+            lambda: Crew(
+                agents=[ag.fundamentals_agent()],
+                tasks=[tk.fundamentals_task(ticker, holding)],
+                process=Process.sequential, verbose=False,
+            ),
         )
-        out = _groq_with_backoff(crew1.kickoff)
-        results["fundamentals"] = str(out)
-        data = _safe_json(str(out))
-        save_scan(ticker, "fundamentals", data.get("reasoning", "")[:500],
-                  data.get("flags", []), data)
     except Exception as exc:
         log.error("Fundamentals agent failed for %s: %s", ticker, exc)
         results["fundamentals"] = f"ERROR: {exc}"
 
-    time.sleep(3)  # respect rate limits between agents
-
-    # --- Agent 2: News ---
+    # ── Agent 2: News ──────────────────────────────────────────────────────────
     try:
-        crew2 = Crew(
-            agents=[ag.news_agent()],
-            tasks=[tk.news_task(ticker, company_name)],
-            process=Process.sequential,
-            verbose=False,
+        def _save_news(data):
+            save_scan(ticker, "news", data.get("reasoning", "")[:500],
+                      data.get("urgent_flags", []), data)
+            if data.get("news_score") is not None:
+                save_sentiment(ticker, float(data["news_score"]), 0)
+
+        results["news"] = _run_agent(
+            ticker, "news",
+            lambda: Crew(
+                agents=[ag.news_agent()],
+                tasks=[tk.news_task(ticker, company_name)],
+                process=Process.sequential, verbose=False,
+            ),
+            save_fn=_save_news,
         )
-        out = _groq_with_backoff(crew2.kickoff)
-        results["news"] = str(out)
-        data = _safe_json(str(out))
-        save_scan(ticker, "news", data.get("reasoning", "")[:500],
-                  data.get("urgent_flags", []), data)
-        if data.get("news_score") is not None:
-            save_sentiment(ticker, float(data["news_score"]), 0)
     except Exception as exc:
         log.error("News agent failed for %s: %s", ticker, exc)
         results["news"] = f"ERROR: {exc}"
 
-    time.sleep(3)
-
-    # --- Agent 3: Social ---
+    # ── Agent 3: Social ────────────────────────────────────────────────────────
     try:
-        crew3 = Crew(
-            agents=[ag.social_agent()],
-            tasks=[tk.social_task(ticker, company_name)],
-            process=Process.sequential,
-            verbose=False,
+        def _save_social(data):
+            save_scan(ticker, "social", data.get("reasoning", "")[:500],
+                      data.get("urgent_flags", []), data)
+            if data.get("social_score") is not None:
+                save_sentiment(ticker, 0, float(data["social_score"]))
+
+        results["social"] = _run_agent(
+            ticker, "social",
+            lambda: Crew(
+                agents=[ag.social_agent()],
+                tasks=[tk.social_task(ticker, company_name)],
+                process=Process.sequential, verbose=False,
+            ),
+            save_fn=_save_social,
         )
-        out = _groq_with_backoff(crew3.kickoff)
-        results["social"] = str(out)
-        data = _safe_json(str(out))
-        save_scan(ticker, "social", data.get("reasoning", "")[:500],
-                  data.get("urgent_flags", []), data)
-        if data.get("social_score") is not None:
-            save_sentiment(ticker, 0, float(data["social_score"]))
     except Exception as exc:
         log.error("Social agent failed for %s: %s", ticker, exc)
         results["social"] = f"ERROR: {exc}"
 
-    time.sleep(3)
-
-    # --- Agent 4: Technical ---
+    # ── Agent 4: Technical ─────────────────────────────────────────────────────
     try:
-        crew4 = Crew(
-            agents=[ag.technical_agent()],
-            tasks=[tk.technical_task(ticker, holding)],
-            process=Process.sequential,
-            verbose=False,
+        results["technical"] = _run_agent(
+            ticker, "technical",
+            lambda: Crew(
+                agents=[ag.technical_agent()],
+                tasks=[tk.technical_task(ticker, holding)],
+                process=Process.sequential, verbose=False,
+            ),
+            save_fn=lambda data: save_scan(ticker, "technical",
+                                           data.get("reasoning", "")[:500], [], data),
         )
-        out = _groq_with_backoff(crew4.kickoff)
-        results["technical"] = str(out)
-        data = _safe_json(str(out))
-        save_scan(ticker, "technical", data.get("reasoning", "")[:500], [], data)
     except Exception as exc:
         log.error("Technical agent failed for %s: %s", ticker, exc)
         results["technical"] = f"ERROR: {exc}"
 
-    time.sleep(3)
-
-    # --- Agent 5: Analyst/Institutional ---
+    # ── Agent 5: Analyst/Institutional ────────────────────────────────────────
     try:
-        crew5 = Crew(
-            agents=[ag.analyst_institutional_agent()],
-            tasks=[tk.analyst_institutional_task(ticker)],
-            process=Process.sequential,
-            verbose=False,
+        results["analyst"] = _run_agent(
+            ticker, "analyst",
+            lambda: Crew(
+                agents=[ag.analyst_institutional_agent()],
+                tasks=[tk.analyst_institutional_task(ticker)],
+                process=Process.sequential, verbose=False,
+            ),
+            save_fn=lambda data: save_scan(ticker, "analyst",
+                                           data.get("reasoning", "")[:500], [], data),
         )
-        out = _groq_with_backoff(crew5.kickoff)
-        results["analyst"] = str(out)
-        data = _safe_json(str(out))
-        save_scan(ticker, "analyst", data.get("reasoning", "")[:500], [], data)
     except Exception as exc:
         log.error("Analyst agent failed for %s: %s", ticker, exc)
         results["analyst"] = f"ERROR: {exc}"
 
-    time.sleep(3)
-
-    # --- Agent 6: Alternative Data ---
+    # ── Agent 6: Alternative Data ──────────────────────────────────────────────
     try:
-        crew6 = Crew(
-            agents=[ag.alternative_data_agent()],
-            tasks=[tk.alternative_data_task(ticker, company_name)],
-            process=Process.sequential,
-            verbose=False,
+        results["alt_data"] = _run_agent(
+            ticker, "alt_data",
+            lambda: Crew(
+                agents=[ag.alternative_data_agent()],
+                tasks=[tk.alternative_data_task(ticker, company_name)],
+                process=Process.sequential, verbose=False,
+            ),
+            save_fn=lambda data: save_scan(ticker, "alt_data",
+                                           data.get("reasoning", "")[:500],
+                                           data.get("pre_hype_signals", []), data),
         )
-        out = _groq_with_backoff(crew6.kickoff)
-        results["alt_data"] = str(out)
-        data = _safe_json(str(out))
-        save_scan(ticker, "alt_data", data.get("reasoning", "")[:500],
-                  data.get("pre_hype_signals", []), data)
     except Exception as exc:
         log.error("Alt data agent failed for %s: %s", ticker, exc)
         results["alt_data"] = f"ERROR: {exc}"
 
-    time.sleep(3)
-
-    # --- Risk Manager ---
+    # ── Risk Manager ───────────────────────────────────────────────────────────
     risk_assessment = ""
     try:
-        risk_task = tk.risk_manager_task(
-            ticker=ticker,
-            holding=holding or {},
-            portfolio=portfolio,
-            technical_result=results.get("technical", "not available"),
-            fundamentals_result=results.get("fundamentals", "not available"),
-            bull_case="pending",
-            bear_case="pending",
-        )
-        crew_risk = Crew(agents=[ag.risk_manager_agent()], tasks=[risk_task],
-                         process=Process.sequential, verbose=False)
-        risk_out = _groq_with_backoff(crew_risk.kickoff)
-        risk_assessment = str(risk_out)
+        cached_risk = get_cached_scan(ticker, "risk_manager", max_age_hours=CACHE_HOURS)
+        if cached_risk and cached_risk.get("raw_text") is None:
+            log.info("Cache hit (%dh): %s / risk_manager", CACHE_HOURS, ticker)
+            risk_assessment = json.dumps(cached_risk)
+        else:
+            risk_task = tk.risk_manager_task(
+                ticker=ticker, holding=holding or {}, portfolio=portfolio,
+                technical_result=results.get("technical", "not available"),
+                fundamentals_result=results.get("fundamentals", "not available"),
+                bull_case="pending", bear_case="pending",
+            )
+            risk_out = _groq_with_backoff(lambda: Crew(
+                agents=[ag.risk_manager_agent()], tasks=[risk_task],
+                process=Process.sequential, verbose=False,
+            ))
+            risk_assessment = str(risk_out)
+            risk_data = _safe_json(risk_assessment)
+            save_scan(ticker, "risk_manager", risk_data.get("reasoning", "")[:300], [], risk_data)
+            time.sleep(3)
+
         results["risk_assessment"] = risk_assessment
-        risk_data = _safe_json(risk_assessment)
-        save_scan(ticker, "risk_manager", risk_data.get("reasoning", "")[:300], [], risk_data)
-        time.sleep(3)
     except Exception as exc:
         log.error("Risk manager failed for %s: %s", ticker, exc)
 
-    # --- Bull / Bear Debate ---
+    # ── Bull / Bear Debate ─────────────────────────────────────────────────────
     bull_case, bear_case = "", ""
     try:
         bull_task, bear_task = tk.debate_task(
-            ticker=ticker,
-            holding=holding or {},
+            ticker=ticker, holding=holding or {},
             fundamentals_result=results.get("fundamentals", "not available"),
             news_result=results.get("news", "not available"),
             social_result=results.get("social", "not available"),
@@ -203,46 +241,45 @@ def run_deep_scan(ticker: str, holding: dict, portfolio: dict) -> dict:
             analyst_result=results.get("analyst", "not available"),
             alt_data_result=results.get("alt_data", "not available"),
         )
-        # Run bull and bear sequentially (rate limit friendly)
-        crew_bull = Crew(agents=[ag.bull_advocate_agent()], tasks=[bull_task],
-                         process=Process.sequential, verbose=False)
-        bull_out = _groq_with_backoff(crew_bull.kickoff)
+
+        bull_out = _groq_with_backoff(lambda: Crew(
+            agents=[ag.bull_advocate_agent()], tasks=[bull_task],
+            process=Process.sequential, verbose=False,
+        ))
         bull_case = str(bull_out)
         results["bull_case"] = bull_case
         save_scan(ticker, "bull_advocate", bull_case[:500], [], {"bull_case": bull_case})
-
         time.sleep(3)
 
-        crew_bear = Crew(agents=[ag.bear_advocate_agent()], tasks=[bear_task],
-                         process=Process.sequential, verbose=False)
-        bear_out = _groq_with_backoff(crew_bear.kickoff)
+        bear_out = _groq_with_backoff(lambda: Crew(
+            agents=[ag.bear_advocate_agent()], tasks=[bear_task],
+            process=Process.sequential, verbose=False,
+        ))
         bear_case = str(bear_out)
         results["bear_case"] = bear_case
         save_scan(ticker, "bear_advocate", bear_case[:500], [], {"bear_case": bear_case})
-
         time.sleep(3)
+
     except Exception as exc:
         log.error("Debate agents failed for %s: %s", ticker, exc)
 
-    # --- Manager Decision (reads debate + all research) ---
+    # ── Manager Decision ───────────────────────────────────────────────────────
     try:
         manager_task = tk.manager_decision_task(
-            ticker=ticker,
-            holding=holding or {},
-            portfolio=portfolio,
+            ticker=ticker, holding=holding or {}, portfolio=portfolio,
             fundamentals_result=results.get("fundamentals", "not available"),
             news_result=results.get("news", "not available"),
             social_result=results.get("social", "not available"),
             technical_result=results.get("technical", "not available"),
             analyst_result=results.get("analyst", "not available"),
             alt_data_result=results.get("alt_data", "not available"),
-            bull_case=bull_case,
-            bear_case=bear_case,
+            bull_case=bull_case, bear_case=bear_case,
             risk_assessment=results.get("risk_assessment", ""),
         )
-        crew_mgr = Crew(agents=[ag.manager_agent()], tasks=[manager_task],
-                        process=Process.sequential, verbose=False)
-        decision_raw = _groq_with_backoff(crew_mgr.kickoff)
+        decision_raw = _groq_with_backoff(lambda: Crew(
+            agents=[ag.manager_agent()], tasks=[manager_task],
+            process=Process.sequential, verbose=False,
+        ))
         decision = str(decision_raw).strip()
         results["manager_decision"] = decision
 
@@ -279,8 +316,7 @@ def run_deep_scan(ticker: str, holding: dict, portfolio: dict) -> dict:
 def run_pulse_scan(ticker: str, portfolio: dict) -> dict:
     """Lightweight pulse scan: news + social + price anomaly check."""
     from src.tools.news_rss_tools import build_news_report
-    from src.tools.yfinance_tools import get_latest_price, price_data
-    import pandas as pd
+    from src.tools.yfinance_tools import price_data
 
     log.info("Pulse scan: %s", ticker)
     result = {"ticker": ticker, "timestamp": datetime.utcnow().isoformat()}
@@ -306,14 +342,12 @@ def run_pulse_scan(ticker: str, portfolio: dict) -> dict:
     except Exception as exc:
         log.error("Pulse price %s: %s", ticker, exc)
 
-    # Trigger emergency scan if warranted
     trigger = (
         result.get("price_anomaly", False) or
         bool(result.get("news_urgent")) or
         result.get("news_score", 0) < -0.5
     )
     result["trigger_emergency"] = trigger
-
     return result
 
 
@@ -321,9 +355,10 @@ def run_chat_command(user_message: str, portfolio: dict) -> dict:
     """Parse a natural language command and return a structured action dict."""
     try:
         task = tk.chat_command_task(user_message, portfolio)
-        crew = Crew(agents=[ag.chat_agent()], tasks=[task],
-                    process=Process.sequential, verbose=False)
-        out = _groq_with_backoff(crew.kickoff)
+        out = _groq_with_backoff(lambda: Crew(
+            agents=[ag.chat_agent()], tasks=[task],
+            process=Process.sequential, verbose=False,
+        ))
         return _safe_json(str(out))
     except Exception as exc:
         log.error("chat_command: %s", exc)
@@ -338,7 +373,7 @@ def run_weekly_debrief(portfolio: dict) -> None:
     name = portfolio.get("user_name", "Investor")
     tickers = [h["ticker"] for h in portfolio.get("holdings", [])]
 
-    summary_parts = [f"📊 Weekly Debrief — {name}\n"]
+    summary_parts = [f"Portfolio Weekly Debrief — {name}\n"]
     for ticker in tickers:
         scan = get_latest_scan(ticker)
         if scan:
@@ -348,7 +383,7 @@ def run_weekly_debrief(portfolio: dict) -> None:
     if recent_alerts:
         summary_parts.append("\n\nAlerts sent this week:")
         for ts, tkr, atype, msg in recent_alerts:
-            summary_parts.append(f"• {tkr} ({atype}) — {str(ts)[:10]}")
+            summary_parts.append(f"- {tkr} ({atype}) — {str(ts)[:10]}")
 
     message = "\n".join(summary_parts)[:3000]
     chat_id = portfolio.get("telegram_chat_id", "")

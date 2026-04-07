@@ -201,6 +201,26 @@ def get_recent_alerts(limit: int = 10):
         return [(r.sent_at, r.ticker, r.type, r.message) for r in rows]
 
 
+def get_cached_scan(ticker: str, agent_name: str, max_age_hours: int = 6) -> dict | None:
+    """Return cached agent result if it exists and is within max_age_hours."""
+    from datetime import timedelta
+    cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
+    with Session() as s:
+        row = (
+            s.query(Scan)
+            .filter(
+                Scan.ticker == ticker,
+                Scan.agent_name == agent_name,
+                Scan.scan_time >= cutoff,
+            )
+            .order_by(Scan.scan_time.desc())
+            .first()
+        )
+        if row:
+            return json.loads(row.raw_json or "{}")
+    return None
+
+
 def get_latest_scan(ticker: str, agent_name: str = None):
     with Session() as s:
         q = s.query(Scan).filter(Scan.ticker == ticker)
