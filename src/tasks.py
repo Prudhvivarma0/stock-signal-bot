@@ -28,9 +28,15 @@ def _holding_ctx(holding: dict) -> str:
 def _position_question(holding: dict, ticker: str) -> str:
     """Returns the right question depending on whether the stock is held."""
     if holding and holding.get("entry_price"):
+        currency = holding.get("currency", "USD")
+        sym = "AED " if currency == "AED" else "$"
+        entry = holding.get("entry_price")
+        shares = holding.get("shares")
+        value = shares * entry
+        value_str = f"AED {value:,.2f}" if currency == "AED" else f"${value:,.2f}"
         return (
-            f"Investor holds {holding.get('shares')} shares of {ticker} "
-            f"@ {holding.get('entry_price')} avg entry. "
+            f"Investor holds {shares} shares of {ticker} "
+            f"@ {sym}{entry} avg entry (position value: {value_str}). "
             f"Question: HOLD, SELL, or BUY MORE?"
         )
     return f"Investor does NOT hold {ticker}. Question: BUY or SKIP?"
@@ -181,22 +187,28 @@ def risk_manager_task(
     shares = holding.get("shares", 0) if holding else 0
     entry = holding.get("entry_price", 0) if holding else 0
     stop_pct = holding.get("stop_loss_pct", 8) if holding else 8
+    currency = holding.get("currency", "USD") if holding else "USD"
+    currency_sym = "AED" if currency == "AED" else "$"
     exposure = shares * entry
+    # Convert AED exposure to USD for portfolio heat calculation
+    exposure_usd = exposure / 3.6725 if currency == "AED" else exposure
+    exposure_str = f"{currency_sym}{exposure:,.2f} (~${exposure_usd:,.0f} USD)" if currency == "AED" else f"${exposure:,.0f}"
 
     return Task(
         description=(
             f"Risk assessment for {ticker}.\n"
-            f"Budget: ${budget:,} | Holdings: {n_holdings} | "
-            f"{'Current exposure: $' + f'{exposure:,.0f}' if is_holding else 'Not held'}. "
-            f"Stop: {stop_pct}%.\n\n"
+            f"Budget: ${budget:,} USD | Holdings: {n_holdings} | "
+            f"{'Current exposure: ' + exposure_str if is_holding else 'Not held'}. "
+            f"Stop: {stop_pct}%. Currency: {currency}.\n\n"
             f"Technical: {technical_result[:300]}\n"
             f"Fundamentals: {fundamentals_result[:300]}\n\n"
             f"Use half-Kelly criterion. Max 20% in one position. "
-            f"{'Decide: ADD, HOLD, or REDUCE.' if is_holding else 'Decide: BUY or NO_POSITION.'}\n\n"
-            f"Return JSON: {{action, confidence, position_size_usd, max_loss_usd, "
-            f"stop_loss_price, risk_reward_ratio, portfolio_heat, reasoning}}"
+            f"{'Decide: ADD, HOLD, or REDUCE.' if is_holding else 'Decide: BUY or NO_POSITION.'}\n"
+            f"IMPORTANT: All prices and values for this stock are in {currency}, not USD.\n\n"
+            f"Return JSON: {{action, confidence, position_size_{currency.lower()}, max_loss_{currency.lower()}, "
+            f"stop_loss_price, risk_reward_ratio, portfolio_heat_pct, reasoning}}"
         ),
-        expected_output="JSON with action, confidence, position_size_usd, stop_loss_price, risk_reward_ratio, reasoning.",
+        expected_output="JSON with action, confidence, stop_loss_price, risk_reward_ratio, reasoning. Values in native currency.",
         agent=ag.risk_manager_agent(),
     )
 
@@ -274,14 +286,14 @@ def manager_decision_task(
     bear_case: str = "",
     risk_assessment: str = "",
 ) -> Task:
-    name = portfolio.get("user_name", "the investor")
     is_holding = bool(holding and holding.get("entry_price"))
     position_q = _position_question(holding, ticker)
+    currency = holding.get("currency", "USD") if holding else "USD"
     alert_types = "HOLD_SIGNAL / SELL_WARNING / BUY_MORE / URGENT_EXIT / NO_ALERT" if is_holding else "OPPORTUNITY / WARNING / NO_ALERT"
 
     return Task(
         description=(
-            f"Final decision for {ticker}.\n"
+            f"Final decision for {ticker}. Currency: {currency}.\n"
             f"{position_q}\n\n"
             f"FUNDAMENTALS: {fundamentals_result[:400]}\n"
             f"NEWS: {news_result[:400]}\n"
@@ -292,17 +304,23 @@ def manager_decision_task(
             f"RISK: {risk_assessment[:300]}\n"
             f"BULL: {bull_case[:400]}\n"
             f"BEAR: {bear_case[:400]}\n\n"
-            f"CRITICAL: Default is NO_ALERT. Only alert if something genuinely changed today.\n"
-            f"Ask: would I message a smart friend about this right now?\n\n"
+            f"CRITICAL RULES:\n"
+            f"1. All prices/values must be in {currency} (not USD unless that IS the currency).\n"
+            f"2. Momentum first: if price is rising and news supports it, say BUY MORE / OPPORTUNITY. "
+            f"If price is falling on bad news, say SELL. Most value comes from catching momentum early.\n"
+            f"3. Macro catalyst connection: explicitly state if any news event (geopolitical, policy, sector) "
+            f"directly impacts this stock's price direction, even if the news isn't about this company.\n"
+            f"4. Default is NO_ALERT only if nothing has changed. If momentum is shifting, flag it.\n\n"
             f"Format EXACTLY:\n"
             f"📊 {ticker} — [TYPE]\n\n"
-            f"SITUATION\n[2-3 sentences, what changed and why it matters NOW]\n\n"
+            f"SITUATION\n[2-3 sentences: what changed, price direction, and why it matters NOW]\n\n"
             f"BULL CASE  [X%]\n[2 arguments with source]\n\n"
             f"BEAR CASE  [X%]\n[2 arguments with source]\n\n"
-            f"RISK MANAGER SAYS\n[HOLD/SELL/BUY MORE/ADD — size $X — stop $Y — R:R]\n\n"
-            f"WHAT TO WATCH\n[1-2 specific triggers]\n\n"
+            f"RISK MANAGER SAYS\n"
+            f"[action — size {currency} X — stop {currency} Y — R:R ratio]\n\n"
+            f"WHAT TO WATCH\n[1-2 specific macro or price triggers for this stock]\n\n"
             f"Under 350 words. No jargon.\n"
-            f"Start with NO_ALERT on first line if no urgent action needed, then still write the full analysis.\n"
+            f"Start with NO_ALERT on first line if no urgent action, then still write the full analysis.\n"
             f"alert_type must be one of: {alert_types}"
         ),
         expected_output="Structured analysis with SITUATION/BULL CASE/BEAR CASE/RISK MANAGER SAYS/WHAT TO WATCH. Starts with NO_ALERT if no urgent action.",
