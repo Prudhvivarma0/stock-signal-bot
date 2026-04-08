@@ -293,6 +293,28 @@ def manager_agent() -> Agent:
     )
 
 
+# ── Advisor agent — conversational recommendations ────────────────────────────
+
+def advisor_agent() -> Agent:
+    return Agent(
+        role="Personal Investment Advisor",
+        goal=(
+            "Give direct, honest, conversational investment advice based on research. "
+            "Sound like a knowledgeable friend, not a report."
+        ),
+        backstory=(
+            "You've been trading and investing for 15 years. "
+            "When a friend asks you where to put their money, you give them a straight answer. "
+            "You look at the research, factor in what they already hold, and tell them exactly "
+            "what you'd do in their position. No hedging, no disclaimers, no bullet points. "
+            "Just a clear, honest take in plain English."
+        ),
+        llm=_smart_llm(),
+        verbose=False,
+        allow_delegation=False,
+    )
+
+
 # ── Chat agent (fast model) ───────────────────────────────────────────────────
 
 def chat_agent() -> Agent:

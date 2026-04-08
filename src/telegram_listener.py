@@ -381,10 +381,13 @@ def _execute_action(action: dict, chat_id: str):
 
 
 def _handle_best_opportunity(budget: str, chat_id: str):
-    """Scan all holdings + watchlist, compare manager decisions, pick the best opportunity."""
+    """Scan all holdings + watchlist, then synthesise a conversational recommendation."""
     try:
-        from src.crew import run_deep_scan
+        from src.crew import run_deep_scan, _groq_with_backoff
         from src.database import init_db
+        from src import tasks as tk
+        from src import agents as ag
+        from crewai import Crew, Process
         init_db()
         portfolio = _load_portfolio()
         all_tickers = (
@@ -395,54 +398,45 @@ def _handle_best_opportunity(budget: str, chat_id: str):
             _reply("No stocks in your portfolio or watchlist to compare.", chat_id)
             return
 
-        budget_str = f" (budget: {budget})" if budget else ""
-        _reply(f"Scanning all {len(all_tickers)} stocks to find the best opportunity{budget_str}...", chat_id)
+        user_question = f"I have {budget + ' ' if budget else ''}to invest. What should I put it in right now?"
+        _reply(f"Let me check all your stocks and come back with a recommendation...", chat_id)
 
-        scores = []
+        scan_summaries = []
         for t in all_tickers:
             holding = next((h for h in portfolio.get("holdings", []) if h["ticker"] == t), None)
             try:
                 results = run_deep_scan(t, holding, portfolio)
                 decision = results.get("manager_decision", "")
-                # Score by signal strength in the decision
                 upper = decision.upper()
                 if any(x in upper for x in ["BUY MORE", "OPPORTUNITY", "STRONG BUY"]):
-                    score = 3
+                    signal = "strong buy"
                 elif "BUY" in upper and "NO_ALERT" not in upper:
-                    score = 2
+                    signal = "buy"
                 elif "HOLD_SIGNAL" in upper:
-                    score = 1
+                    signal = "hold"
                 elif any(x in upper for x in ["SELL", "WARNING", "EXIT"]):
-                    score = -1
+                    signal = "caution"
                 else:
-                    score = 0
-                scores.append((t, score, decision))
+                    signal = "neutral"
+                clean = decision.strip()
+                if clean.upper().startswith("NO_ALERT"):
+                    clean = clean[len("NO_ALERT"):].strip().lstrip(":").strip()
+                scan_summaries.append({"ticker": t, "signal": signal, "summary": clean[:400]})
             except Exception as exc:
                 log.error("best_opportunity scan %s: %s", t, exc)
+                scan_summaries.append({"ticker": t, "signal": "error", "summary": str(exc)[:100]})
 
-        if not scores:
+        if not scan_summaries:
             _reply("Couldn't complete scans. Try again.", chat_id)
             return
 
-        # Sort by score descending
-        scores.sort(key=lambda x: x[1], reverse=True)
-        best_ticker, best_score, best_decision = scores[0]
-
-        # Build summary
-        lines = [f"Best opportunity right now{budget_str}:\n"]
-        for t, score, _ in scores:
-            label = {3: "🟢 Strong buy", 2: "🟢 Buy", 1: "🟡 Hold signal",
-                     0: "⚪ Neutral", -1: "🔴 Caution"}.get(score, "⚪")
-            lines.append(f"{label} — {t}")
-
-        lines.append(f"\n📊 Top pick: {best_ticker}\n")
-        # Strip NO_ALERT prefix from best decision
-        clean = best_decision.strip()
-        if clean.upper().startswith("NO_ALERT"):
-            clean = clean[len("NO_ALERT"):].strip().lstrip(":").strip()
-        lines.append(clean[:1200])
-
-        _reply("\n".join(lines), chat_id)
+        # Synthesise with conversational advisor
+        advice_out = _groq_with_backoff(lambda: Crew(
+            agents=[ag.advisor_agent()],
+            tasks=[tk.portfolio_advice_task(user_question, scan_summaries, portfolio)],
+            process=Process.sequential, verbose=False,
+        ))
+        _reply(str(advice_out).strip(), chat_id)
 
     except Exception as exc:
         log.error("best_opportunity error: %s", exc)

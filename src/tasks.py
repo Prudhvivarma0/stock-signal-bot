@@ -303,19 +303,37 @@ def manager_decision_task(
             f"RISK: {risk_assessment[:300]}\n"
             f"BULL: {bull_case[:400]}\n"
             f"BEAR: {bear_case[:400]}\n\n"
-            f"All prices in {currency}. Do not mention portfolio allocation.\n\n"
-            f"Based on everything above, form your own view and write your analysis:\n\n"
-            f"📊 {ticker} — [your chosen label]\n\n"
-            f"SITUATION\n[what is happening and why it matters]\n\n"
-            f"BULL CASE  [X%]\n[2 arguments]\n\n"
-            f"BEAR CASE  [X%]\n[2 arguments]\n\n"
-            f"RISK MANAGER SAYS\n[action — stop {currency} Y — R:R — reasoning]\n\n"
-            f"WHAT TO WATCH\n[specific triggers that would change your view]\n\n"
-            f"Under 350 words. If there is genuinely nothing to act on, start with NO_ALERT then explain why.\n"
-            f"Suggested label types: {alert_types}"
+            f"All prices in {currency}. Do not mention portfolio allocation. "
+            f"Give your honest view — write however feels natural to you. "
+            f"If there is nothing to act on, include NO_ALERT somewhere in your response."
         ),
-        expected_output="Structured analysis with SITUATION/BULL CASE/BEAR CASE/RISK MANAGER SAYS/WHAT TO WATCH. Starts with NO_ALERT if no urgent action.",
+        expected_output="Honest investment view on this stock.",
         agent=ag.manager_agent(),
+    )
+
+
+def portfolio_advice_task(user_question: str, scan_summaries: list[dict], portfolio: dict) -> Task:
+    """Synthesise all scan results into a conversational recommendation."""
+    holdings_str = ", ".join(
+        f"{h['ticker']} ({h.get('shares')} shares @ {h.get('currency','USD')} {h.get('entry_price')})"
+        for h in portfolio.get("holdings", [])
+    )
+    watchlist_str = ", ".join(portfolio.get("watchlist", [])) or "none"
+
+    summaries = ""
+    for s in scan_summaries:
+        summaries += f"\n{s['ticker']}: {s['signal']} — {s['summary'][:300]}\n"
+
+    return Task(
+        description=(
+            f"The user asked: \"{user_question}\"\n\n"
+            f"Their holdings: {holdings_str or 'none'}\n"
+            f"Watchlist: {watchlist_str}\n\n"
+            f"What the research says about each stock:\n{summaries}\n\n"
+            "Answer their question honestly. Be direct. Talk to them like a person."
+        ),
+        expected_output="Direct honest answer to the user's question.",
+        agent=ag.advisor_agent(),
     )
 
 
