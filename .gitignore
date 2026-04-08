@@ -46,3 +46,6 @@ env/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Claude Code settings (may contain API keys / tool history)
+.claude/
