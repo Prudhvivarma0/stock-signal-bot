@@ -294,7 +294,7 @@ def manager_decision_task(
             f"BEAR: {bear_case[:400]}\n\n"
             f"CRITICAL: Default is NO_ALERT. Only alert if something genuinely changed today.\n"
             f"Ask: would I message a smart friend about this right now?\n\n"
-            f"If alerting, format EXACTLY:\n"
+            f"Format EXACTLY:\n"
             f"📊 {ticker} — [TYPE]\n\n"
             f"SITUATION\n[2-3 sentences, what changed and why it matters NOW]\n\n"
             f"BULL CASE  [X%]\n[2 arguments with source]\n\n"
@@ -302,10 +302,10 @@ def manager_decision_task(
             f"RISK MANAGER SAYS\n[HOLD/SELL/BUY MORE/ADD — size $X — stop $Y — R:R]\n\n"
             f"WHAT TO WATCH\n[1-2 specific triggers]\n\n"
             f"Under 350 words. No jargon.\n"
-            f"If NO alert: output exactly NO_ALERT\n"
+            f"Start with NO_ALERT on first line if no urgent action needed, then still write the full analysis.\n"
             f"alert_type must be one of: {alert_types}"
         ),
-        expected_output="NO_ALERT or structured alert with SITUATION/BULL CASE/BEAR CASE/RISK MANAGER SAYS/WHAT TO WATCH.",
+        expected_output="Structured analysis with SITUATION/BULL CASE/BEAR CASE/RISK MANAGER SAYS/WHAT TO WATCH. Starts with NO_ALERT if no urgent action.",
         agent=ag.manager_agent(),
     )
 

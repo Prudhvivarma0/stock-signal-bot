@@ -143,19 +143,18 @@ def _handle_scan(ticker: str | None, chat_id: str):
             results = run_deep_scan(t, holding, portfolio)
             decision = results.get("manager_decision", "")
             if not decision:
-                _reply(f"{t}: scan complete — manager produced no output.", chat_id)
-            elif "NO_ALERT" in decision.upper():
-                # Still send the decision text so user gets a real answer
-                summary = decision.replace("NO_ALERT", "").strip()
-                if summary and len(summary) > 20:
-                    _reply(f"{t} scan result:\n\n{summary[:1500]}", chat_id)
+                _reply(f"{t}: scan complete — no output from manager.", chat_id)
+            else:
+                # Always send the full analysis — user explicitly asked for it
+                # Strip just the NO_ALERT marker from the top so the message is clean
+                clean = decision.strip()
+                if clean.upper().startswith("NO_ALERT"):
+                    clean = clean[len("NO_ALERT"):].strip().lstrip(":").strip()
+                if len(clean) > 30:
+                    _reply(f"{clean[:2000]}", chat_id)
                 else:
-                    _reply(
-                        f"{t}: scan complete — nothing actionable right now. "
-                        f"Check /status for your current P&L.",
-                        chat_id,
-                    )
-            # If there IS an alert, run_deep_scan already sent it via the normal alert pipeline
+                    _reply(f"{t}: scan complete — no significant changes detected.", chat_id)
+            # Urgent alerts (SELL/OPPORTUNITY etc.) are also sent by run_deep_scan itself
 
     except Exception as exc:
         log.error("Telegram scan error: %s", exc)
