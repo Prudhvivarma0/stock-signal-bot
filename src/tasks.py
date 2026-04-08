@@ -196,19 +196,18 @@ def risk_manager_task(
 
     return Task(
         description=(
-            f"Risk assessment for {ticker}.\n"
-            f"Budget: ${budget:,} USD | Holdings: {n_holdings} | "
-            f"{'Current exposure: ' + exposure_str if is_holding else 'Not held'}. "
-            f"Stop: {stop_pct}%. Currency: {currency}.\n\n"
+            f"Risk assessment for {ticker} (currency: {currency}).\n"
+            f"{'Entry: ' + currency_sym + str(entry) + ', currently held: ' + exposure_str if is_holding else 'Not currently held.'}. "
+            f"Stop loss guideline: {stop_pct}%.\n\n"
             f"Technical: {technical_result[:300]}\n"
             f"Fundamentals: {fundamentals_result[:300]}\n\n"
-            f"Use half-Kelly criterion. Max 20% in one position. "
-            f"{'Decide: ADD, HOLD, or REDUCE.' if is_holding else 'Decide: BUY or NO_POSITION.'}\n"
-            f"IMPORTANT: All prices and values for this stock are in {currency}, not USD.\n\n"
-            f"Return JSON: {{action, confidence, position_size_{currency.lower()}, max_loss_{currency.lower()}, "
-            f"stop_loss_price, risk_reward_ratio, portfolio_heat_pct, reasoning}}"
+            f"Focus ONLY on the trade itself — NOT portfolio allocation.\n"
+            f"Set stop loss at nearest key support level or ATR-based level (not just a % from entry).\n"
+            f"{'Decide: ADD, HOLD, or REDUCE.' if is_holding else 'Decide: BUY or NO_POSITION.'}\n\n"
+            f"Return JSON: {{action, confidence, stop_loss_price, risk_reward_ratio, reasoning}}\n"
+            f"All prices in {currency}."
         ),
-        expected_output="JSON with action, confidence, stop_loss_price, risk_reward_ratio, reasoning. Values in native currency.",
+        expected_output="JSON with action, confidence, stop_loss_price, risk_reward_ratio, reasoning. All prices in native currency.",
         agent=ag.risk_manager_agent(),
     )
 
@@ -304,23 +303,22 @@ def manager_decision_task(
             f"RISK: {risk_assessment[:300]}\n"
             f"BULL: {bull_case[:400]}\n"
             f"BEAR: {bear_case[:400]}\n\n"
-            f"CRITICAL RULES:\n"
-            f"1. All prices/values must be in {currency} (not USD unless that IS the currency).\n"
-            f"2. Momentum first: if price is rising and news supports it, say BUY MORE / OPPORTUNITY. "
-            f"If price is falling on bad news, say SELL. Most value comes from catching momentum early.\n"
-            f"3. Macro catalyst connection: explicitly state if any news event (geopolitical, policy, sector) "
-            f"directly impacts this stock's price direction, even if the news isn't about this company.\n"
-            f"4. Default is NO_ALERT only if nothing has changed. If momentum is shifting, flag it.\n\n"
+            f"RULES:\n"
+            f"1. All prices/values in {currency}. Do NOT mention portfolio allocation or position sizing as a reason to hold.\n"
+            f"2. Be decisive. If momentum + news align → BUY MORE or OPPORTUNITY. If deteriorating → SELL or WARNING. "
+            f"HOLD means 'no edge right now' — not 'safe default'.\n"
+            f"3. Connect macro events to this stock explicitly: geopolitical news, sector moves, policy changes.\n"
+            f"4. NO_ALERT only if nothing has changed AND no momentum shift. Otherwise pick an alert type.\n\n"
             f"Format EXACTLY:\n"
             f"📊 {ticker} — [TYPE]\n\n"
-            f"SITUATION\n[2-3 sentences: what changed, price direction, and why it matters NOW]\n\n"
+            f"SITUATION\n[2-3 sentences: momentum direction, key catalyst, what to do NOW]\n\n"
             f"BULL CASE  [X%]\n[2 arguments with source]\n\n"
             f"BEAR CASE  [X%]\n[2 arguments with source]\n\n"
             f"RISK MANAGER SAYS\n"
-            f"[action — size {currency} X — stop {currency} Y — R:R ratio]\n\n"
-            f"WHAT TO WATCH\n[1-2 specific macro or price triggers for this stock]\n\n"
-            f"Under 350 words. No jargon.\n"
-            f"Start with NO_ALERT on first line if no urgent action, then still write the full analysis.\n"
+            f"[action — stop {currency} Y — R:R ratio — why this stop level]\n\n"
+            f"WHAT TO WATCH\n[1-2 specific price levels or events that change the call]\n\n"
+            f"Under 350 words. Direct. No jargon.\n"
+            f"Start with NO_ALERT on first line only if genuinely no action, then write full analysis anyway.\n"
             f"alert_type must be one of: {alert_types}"
         ),
         expected_output="Structured analysis with SITUATION/BULL CASE/BEAR CASE/RISK MANAGER SAYS/WHAT TO WATCH. Starts with NO_ALERT if no urgent action.",
