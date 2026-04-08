@@ -24,10 +24,9 @@ def _get(params: dict, retries: int = 2) -> dict:
             r.raise_for_status()
             data = r.json()
             if "Note" in data or "Information" in data:
-                # rate limit hit
-                log.warning("Alpha Vantage rate limit, waiting 60s")
-                time.sleep(60)
-                continue
+                # rate limit hit — return empty rather than blocking threads
+                log.warning("Alpha Vantage rate limit — skipping (free tier daily limit reached)")
+                return {}
             return data
         except Exception as exc:
             log.error("alpha_vantage _get(%s): %s", params.get("function"), exc)

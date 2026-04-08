@@ -59,25 +59,18 @@ def loop_a_pulse():
 
 # ── Loop B: Deep research twice daily ────────────────────────────────────────
 def loop_b_deep():
-    """Deep scan all stocks in parallel — one thread per stock."""
+    """Deep scan all stocks sequentially to avoid LLM connection contention."""
     try:
         portfolio = _load_portfolio()
         tickers = _all_tickers(portfolio)
-        log.info("Starting deep scan — %d tickers in parallel", len(tickers))
-
-        def _scan(ticker):
-            holding = _get_holding(portfolio, ticker)
-            run_deep_scan(ticker, holding, portfolio)
-
-        with ThreadPoolExecutor(max_workers=len(tickers)) as executor:
-            futures = {executor.submit(_scan, t): t for t in tickers}
-            for future in as_completed(futures):
-                t = futures[future]
-                try:
-                    future.result()
-                    log.info("Deep scan complete: %s", t)
-                except Exception as exc:
-                    log.error("Deep scan %s: %s", t, exc)
+        log.info("Starting deep scan — %d tickers sequentially", len(tickers))
+        for ticker in tickers:
+            try:
+                holding = _get_holding(portfolio, ticker)
+                run_deep_scan(ticker, holding, portfolio)
+                log.info("Deep scan complete: %s", ticker)
+            except Exception as exc:
+                log.error("Deep scan %s: %s", ticker, exc)
     except Exception as exc:
         log.error("Loop B error: %s", exc)
 

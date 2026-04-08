@@ -6,10 +6,8 @@ from datetime import datetime, timedelta, timezone
 log = logging.getLogger(__name__)
 
 SUBREDDITS = [
-    "stocks", "investing", "SecurityAnalysis", "wallstreetbets", "StockMarket",
-    "options", "ValueInvesting", "dividends", "smallcapstocks", "pennystocks",
-    "CanadianInvestor", "fatFIRE", "UAEInvesting", "dubai", "saudiarabia",
-    "middleeast", "ArabicInvestments", "Entrepreneur",
+    "stocks", "investing", "wallstreetbets", "StockMarket",
+    "options", "ValueInvesting",
 ]
 
 
@@ -19,10 +17,34 @@ def _get_reddit():
         client_id=os.getenv("REDDIT_CLIENT_ID", ""),
         client_secret=os.getenv("REDDIT_CLIENT_SECRET", ""),
         user_agent=os.getenv("REDDIT_USER_AGENT", "StockResearchBot/1.0"),
+        timeout=10,
+        ratelimit_seconds=5,
     )
 
 
 def reddit_scan(ticker: str) -> dict:
+    """Scan Reddit for ticker mentions."""
+    if not os.getenv("REDDIT_CLIENT_ID", ""):
+        log.info("reddit_scan: no credentials configured, skipping")
+        return {"mentions_24h": 0, "velocity": 0, "error": "no_credentials"}
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+    ex = ThreadPoolExecutor(max_workers=1)
+    try:
+        future = ex.submit(_reddit_scan_inner, ticker)
+        result = future.result(timeout=30)
+        ex.shutdown(wait=False)
+        return result
+    except FuturesTimeout:
+        ex.shutdown(wait=False)
+        log.warning("reddit_scan(%s): timed out after 30s", ticker)
+        return {"mentions_24h": 0, "velocity": 0, "error": "timeout"}
+    except Exception as exc:
+        ex.shutdown(wait=False)
+        log.error("reddit_scan(%s): %s", ticker, exc)
+        return {"mentions_24h": 0, "velocity": 0, "error": str(exc)}
+
+
+def _reddit_scan_inner(ticker: str) -> dict:
     try:
         reddit = _get_reddit()
         now = datetime.now(timezone.utc)
@@ -37,7 +59,7 @@ def reddit_scan(ticker: str) -> dict:
         for sub_name in SUBREDDITS:
             try:
                 sub = reddit.subreddit(sub_name)
-                for post in sub.search(ticker, sort="new", time_filter="day", limit=25):
+                for post in sub.search(ticker, sort="new", time_filter="day", limit=10):
                     title = (post.title or "").lower()
                     body = (post.selftext or "").lower()
                     if ticker.lower() not in title and ticker.lower() not in body:
@@ -66,5 +88,5 @@ def reddit_scan(ticker: str) -> dict:
             "trigger_emergency": bool(urgent_dd),
         }
     except Exception as exc:
-        log.error("reddit_scan(%s): %s", ticker, exc)
+        log.error("_reddit_scan_inner(%s): %s", ticker, exc)
         return {"mentions_24h": 0, "velocity": 0, "error": str(exc)}

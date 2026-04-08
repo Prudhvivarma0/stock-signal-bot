@@ -27,16 +27,18 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 HELP_TEXT = (
     "Stock Signal Bot commands:\n\n"
-    "/scan NVDA — deep scan a stock\n"
+    "/scan NVDA — deep scan a stock (any ticker, not just portfolio)\n"
     "/scan — deep scan all holdings\n"
     "/pulse NVDA — quick news + price check\n"
     "/status — portfolio P&L snapshot\n"
     "/add TSLA 5 220.50 — add stock (ticker, shares, price)\n"
     "/remove TSLA — remove from portfolio\n"
+    "/reset_alerts — clear recent alert history (allows resending)\n"
     "/help — this message\n\n"
     "Or plain English:\n"
+    "  'Should I buy EMAAR?'\n"
+    "  'Should I buy more SALIK?'\n"
     "  'I bought 5 shares of TSLA at $220'\n"
-    "  'how is NVDA doing?'\n"
     "  'what is my total P&L?'"
 )
 
@@ -113,6 +115,11 @@ def _handle_message(text: str, chat_id: str):
             _reply("Format: /remove TICKER\nExample: /remove TSLA", chat_id)
         return
 
+    # /reset_alerts — clear alert history so alerts can be re-sent
+    if lower in ("/reset_alerts", "reset_alerts"):
+        _handle_reset_alerts(chat_id)
+        return
+
     # Anything else — route through AI chat agent
     threading.Thread(target=_handle_chat, args=(text, chat_id), daemon=True).start()
 
@@ -130,17 +137,14 @@ def _handle_scan(ticker: str | None, chat_id: str):
         )
 
         for i, t in enumerate(tickers):
-            holding = next((h for h in portfolio.get("holdings", []) if h["ticker"] == t), {})
+            # Look up holding — works for portfolio stocks AND any other ticker
+            holding = next((h for h in portfolio.get("holdings", []) if h["ticker"] == t), None)
             _reply(f"Scanning {t}... ({i+1}/{len(tickers)})", chat_id)
             results = run_deep_scan(t, holding, portfolio)
             decision = results.get("manager_decision", "")
-            if "NO_ALERT" in decision.upper():
+            if not decision or "NO_ALERT" in decision.upper():
                 _reply(f"{t}: scan complete — no signal worth alerting on right now.", chat_id)
             # If there IS an alert, run_deep_scan already sent it via the normal alert pipeline
-
-            if i < len(tickers) - 1:
-                _reply(f"Waiting 10 minutes before scanning {tickers[i+1]}...", chat_id)
-                time.sleep(600)
 
     except Exception as exc:
         log.error("Telegram scan error: %s", exc)
@@ -266,6 +270,19 @@ def _handle_add(ticker: str, shares: float, price: float, stop_pct: float, chat_
     except Exception as exc:
         log.error("Telegram add error: %s", exc)
         _reply(f"Failed to add {ticker}: {str(exc)[:150]}", chat_id)
+
+
+def _handle_reset_alerts(chat_id: str):
+    """Clear recent alert history so alerts can be resent."""
+    try:
+        from src.database import Session, AlertSent
+        with Session() as s:
+            deleted = s.query(AlertSent).delete()
+            s.commit()
+        _reply(f"Alert history cleared ({deleted} entries). Next scan will resend alerts if there are signals.", chat_id)
+    except Exception as exc:
+        log.error("reset_alerts error: %s", exc)
+        _reply(f"Failed to reset alerts: {str(exc)[:150]}", chat_id)
 
 
 def _handle_remove(ticker: str, chat_id: str):

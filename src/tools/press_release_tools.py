@@ -9,7 +9,7 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; StockResearchBot/1.0)"}
 def nasdaq_press_releases(ticker: str) -> list:
     try:
         url = f"https://api.nasdaq.com/api/company/{ticker}/pressreleases?limit=10"
-        r = requests.get(url, headers=HEADERS, timeout=15)
+        r = requests.get(url, headers=HEADERS, timeout=8)
         r.raise_for_status()
         data = r.json()
         items = data.get("data", {}).get("rows", []) or []

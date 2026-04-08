@@ -20,6 +20,14 @@ import os
 import time
 
 from crewai import Agent, LLM
+from src.tools.crew_tools import (
+    technical_analysis, yfinance_fundamentals, av_company_overview, av_earnings,
+    fred_macro, insider_transactions, sec_8k_alerts, sec_edgar_facts,
+    news_scan, press_releases,
+    reddit_scan, stocktwits_sentiment, google_trends, wikipedia_views,
+    analyst_ratings, institutional_ownership,
+    job_postings, options_flow,
+)
 
 log = logging.getLogger(__name__)
 
@@ -47,22 +55,24 @@ def _llm(model: str = FAST_MODEL) -> LLM:
     groq_key = os.getenv("GROQ_API_KEY", "")
     gemini_key = os.getenv("GEMINI_API_KEY", "")
 
+    _kw = {"temperature": 0.1, "max_tokens": 4096, "timeout": 60, "max_retries": 0}
+
     if model.startswith("anthropic") and anthropic_key and not _FALLBACK_ACTIVE:
-        return LLM(model=model, api_key=anthropic_key, temperature=0.1, max_tokens=4096)
+        return LLM(model=model, api_key=anthropic_key, **_kw)
 
     if model.startswith("groq") and groq_key and not _FALLBACK_ACTIVE:
-        return LLM(model=model, api_key=groq_key, temperature=0.1, max_tokens=4096)
+        return LLM(model=model, api_key=groq_key, **_kw)
 
     if model.startswith("gemini") and gemini_key:
-        return LLM(model=model, api_key=gemini_key, temperature=0.1, max_tokens=4096)
+        return LLM(model=model, api_key=gemini_key, **_kw)
 
     # Fallback chain: Groq → Gemini
     if groq_key:
         log.warning("Primary LLM unavailable, falling back to Groq")
-        return LLM(model="groq/llama-3.1-8b-instant", api_key=groq_key, temperature=0.1, max_tokens=4096)
+        return LLM(model="groq/llama-3.1-8b-instant", api_key=groq_key, **_kw)
     if gemini_key:
         log.warning("Falling back to Gemini")
-        return LLM(model="gemini/gemini-2.0-flash-lite", api_key=gemini_key, temperature=0.1, max_tokens=4096)
+        return LLM(model="gemini/gemini-2.0-flash-lite", api_key=gemini_key, **_kw)
 
     raise ValueError("No LLM API key available. Set ANTHROPIC_API_KEY in .env")
 
@@ -92,6 +102,8 @@ def fundamentals_agent() -> Agent:
             "Every claim cites its source."
         ),
         llm=_fast_llm(),
+        tools=[yfinance_fundamentals, av_company_overview, av_earnings,
+               fred_macro, insider_transactions, sec_8k_alerts, sec_edgar_facts],
         verbose=True,
         allow_delegation=False,
     )
@@ -111,6 +123,7 @@ def news_agent() -> Agent:
             "You never cry wolf. Only flag things that genuinely change the picture."
         ),
         llm=_fast_llm(),
+        tools=[news_scan, press_releases, sec_8k_alerts],
         verbose=True,
         allow_delegation=False,
     )
@@ -130,6 +143,7 @@ def social_agent() -> Agent:
             "You distinguish organic interest from pump-and-dump."
         ),
         llm=_fast_llm(),
+        tools=[reddit_scan, stocktwits_sentiment, google_trends, wikipedia_views],
         verbose=True,
         allow_delegation=False,
     )
@@ -149,6 +163,7 @@ def technical_agent() -> Agent:
             "You spot setups and breakdowns quickly."
         ),
         llm=_fast_llm(),
+        tools=[technical_analysis, options_flow],
         verbose=True,
         allow_delegation=False,
     )
@@ -167,6 +182,7 @@ def analyst_institutional_agent() -> Agent:
             "You read between the lines of upgrades, downgrades, and target changes."
         ),
         llm=_fast_llm(),
+        tools=[analyst_ratings, institutional_ownership, yfinance_fundamentals],
         verbose=True,
         allow_delegation=False,
     )
@@ -187,6 +203,7 @@ def alternative_data_agent() -> Agent:
             "these are your bread and butter."
         ),
         llm=_fast_llm(),
+        tools=[google_trends, job_postings, fred_macro, wikipedia_views],
         verbose=True,
         allow_delegation=False,
     )

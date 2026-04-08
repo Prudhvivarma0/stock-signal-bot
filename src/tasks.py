@@ -287,7 +287,11 @@ def chat_command_task(user_message: str, portfolio: dict) -> Task:
             '{"action":"show_performance"}\n'
             '{"action":"answer_question","answer":"..."}\n'
             '{"action":"unknown","clarification":"..."}\n\n'
-            "Micron=MU, Google=GOOGL, Meta=META.\n"
+            "KEY RULES:\n"
+            "- 'Should I buy X?', 'Is X good?', 'What about X?' → run_scan for that ticker\n"
+            "- 'Should I buy more X?' → run_scan for X (X may already be in holdings)\n"
+            "- Any investment question about a specific stock → run_scan for that stock\n"
+            "- Micron=MU, Google=GOOGL, Meta=META, Emirates NBD=ENBD, Emaar=EMAAR\n"
             "Return ONLY valid JSON array. No markdown, no explanation."
         ),
         expected_output="Valid JSON array of action objects.",

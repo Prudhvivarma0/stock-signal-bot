@@ -32,18 +32,13 @@ def _safe_json(text: str) -> dict:
 
 
 def _groq_with_backoff(crew_factory, max_retries: int = 3):
-    """Run a crew with exponential backoff and automatic Gemini fallback on 429.
-
-    crew_factory: callable that returns a fresh Crew instance (rebuilt on each attempt,
-    so agents pick up the fallback flag if it gets activated mid-retry).
-    """
+    """Run a crew with exponential backoff and automatic fallback on 429/529."""
     gemini_available = bool(os.getenv("GEMINI_API_KEY", ""))
 
     for attempt in range(max_retries):
         try:
-            # On the final attempt, activate Gemini fallback if Groq kept 429-ing
             if attempt == max_retries - 1 and gemini_available and not ag._FALLBACK_ACTIVE:
-                log.warning("Groq rate limit persists — activating Gemini fallback")
+                log.warning("Rate limit persists — activating fallback model")
                 ag.set_fallback(True)
 
             crew = crew_factory()
@@ -51,11 +46,15 @@ def _groq_with_backoff(crew_factory, max_retries: int = 3):
 
         except Exception as exc:
             err = str(exc)
-            is_rate_limit = "429" in err or "rate_limit" in err.lower() or "quota" in err.lower()
+            is_rate_limit = ("429" in err or "529" in err or "rate_limit" in err.lower()
+                             or "quota" in err.lower() or "overloaded" in err.lower()
+                             or "ReadTimeout" in err or "ConnectTimeout" in err
+                             or "timed out" in err.lower())
 
             if is_rate_limit and attempt < max_retries - 1:
-                wait = 60 * (2 ** attempt)  # 60s, 120s, ...
-                log.warning("Rate limit (attempt %d/%d) — waiting %ds", attempt + 1, max_retries, wait)
+                wait = 15 * (2 ** attempt)  # 15s, 30s — fast retry
+                log.warning("Rate limit (attempt %d/%d) — waiting %ds: %s",
+                            attempt + 1, max_retries, wait, err[:80])
                 time.sleep(wait)
             else:
                 raise
@@ -69,7 +68,7 @@ def _run_agent(ticker: str, agent_name: str, crew_factory, *, save_fn=None, cach
     Returns the raw output string (JSON or text).
     """
     cached = get_cached_scan(ticker, agent_name, max_age_hours=cache_hours)
-    if cached and cached.get("raw_text") is None:
+    if cached:
         log.info("Cache hit (%dh): %s / %s", cache_hours, ticker, agent_name)
         return json.dumps(cached)
 

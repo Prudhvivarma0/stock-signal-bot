@@ -211,24 +211,30 @@ def main():
     scheduler.start()
     log.info("Scheduler started.")
 
-    # Immediate deep scan on startup — all stocks in parallel
-    log.info("Running startup deep scan on all stocks in parallel...")
+    # Immediate deep scan on startup — sequential to avoid LLM connection contention
+    log.info("Running startup deep scan on all stocks (sequential)...")
     from src.crew import run_deep_scan
-    from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    holdings = portfolio.get("holdings", [])
-    def _startup_scan(h):
-        run_deep_scan(h["ticker"], h, portfolio)
+    all_startup = (
+        [{"ticker": t, "exchange": "US", "currency": "USD"} for t in portfolio.get("watchlist", [])]
+        + portfolio.get("holdings", [])
+    )
+    # deduplicate: holdings take priority
+    seen_tickers = set()
+    startup_list = []
+    for item in reversed(all_startup):  # holdings first (reversed so holdings overwrite watchlist)
+        if item["ticker"] not in seen_tickers:
+            seen_tickers.add(item["ticker"])
+            startup_list.append(item)
 
-    with ThreadPoolExecutor(max_workers=max(len(holdings), 1)) as executor:
-        futures = {executor.submit(_startup_scan, h): h["ticker"] for h in holdings}
-        for future in as_completed(futures):
-            t = futures[future]
-            try:
-                future.result()
-                log.info("Startup scan complete: %s", t)
-            except Exception as exc:
-                log.error("Startup scan %s: %s", t, exc)
+    for h in startup_list:
+        t = h.get("ticker") or h
+        holding = next((x for x in portfolio.get("holdings", []) if x["ticker"] == t), None)
+        try:
+            run_deep_scan(t, holding, portfolio)
+            log.info("Startup scan complete: %s", t)
+        except Exception as exc:
+            log.error("Startup scan %s: %s", t, exc)
 
     # Keep alive forever
     log.info("System running. Dashboard: http://localhost:8501")
