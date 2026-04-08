@@ -320,6 +320,10 @@ def _execute_action(action: dict, chat_id: str):
     if act == "answer_question":
         _reply(action.get("answer", "I'm not sure about that."), chat_id)
 
+    elif act == "best_opportunity":
+        budget = action.get("budget", "")
+        threading.Thread(target=_handle_best_opportunity, args=(budget, chat_id), daemon=True).start()
+
     elif act == "show_performance":
         _handle_status(chat_id)
 
@@ -374,6 +378,75 @@ def _execute_action(action: dict, chat_id: str):
              else "Try /help to see what I can do."),
             chat_id,
         )
+
+
+def _handle_best_opportunity(budget: str, chat_id: str):
+    """Scan all holdings + watchlist, compare manager decisions, pick the best opportunity."""
+    try:
+        from src.crew import run_deep_scan
+        from src.database import init_db
+        init_db()
+        portfolio = _load_portfolio()
+        all_tickers = (
+            [h["ticker"] for h in portfolio.get("holdings", [])]
+            + portfolio.get("watchlist", [])
+        )
+        if not all_tickers:
+            _reply("No stocks in your portfolio or watchlist to compare.", chat_id)
+            return
+
+        budget_str = f" (budget: {budget})" if budget else ""
+        _reply(f"Scanning all {len(all_tickers)} stocks to find the best opportunity{budget_str}...", chat_id)
+
+        scores = []
+        for t in all_tickers:
+            holding = next((h for h in portfolio.get("holdings", []) if h["ticker"] == t), None)
+            try:
+                results = run_deep_scan(t, holding, portfolio)
+                decision = results.get("manager_decision", "")
+                # Score by signal strength in the decision
+                upper = decision.upper()
+                if any(x in upper for x in ["BUY MORE", "OPPORTUNITY", "STRONG BUY"]):
+                    score = 3
+                elif "BUY" in upper and "NO_ALERT" not in upper:
+                    score = 2
+                elif "HOLD_SIGNAL" in upper:
+                    score = 1
+                elif any(x in upper for x in ["SELL", "WARNING", "EXIT"]):
+                    score = -1
+                else:
+                    score = 0
+                scores.append((t, score, decision))
+            except Exception as exc:
+                log.error("best_opportunity scan %s: %s", t, exc)
+
+        if not scores:
+            _reply("Couldn't complete scans. Try again.", chat_id)
+            return
+
+        # Sort by score descending
+        scores.sort(key=lambda x: x[1], reverse=True)
+        best_ticker, best_score, best_decision = scores[0]
+
+        # Build summary
+        lines = [f"Best opportunity right now{budget_str}:\n"]
+        for t, score, _ in scores:
+            label = {3: "🟢 Strong buy", 2: "🟢 Buy", 1: "🟡 Hold signal",
+                     0: "⚪ Neutral", -1: "🔴 Caution"}.get(score, "⚪")
+            lines.append(f"{label} — {t}")
+
+        lines.append(f"\n📊 Top pick: {best_ticker}\n")
+        # Strip NO_ALERT prefix from best decision
+        clean = best_decision.strip()
+        if clean.upper().startswith("NO_ALERT"):
+            clean = clean[len("NO_ALERT"):].strip().lstrip(":").strip()
+        lines.append(clean[:1200])
+
+        _reply("\n".join(lines), chat_id)
+
+    except Exception as exc:
+        log.error("best_opportunity error: %s", exc)
+        _reply(f"Something went wrong: {str(exc)[:150]}", chat_id)
 
 
 def _handle_chat(text: str, chat_id: str):

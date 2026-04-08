@@ -332,6 +332,7 @@ def chat_command_task(user_message: str, portfolio: dict) -> Task:
             '{"action":"remove_stock","ticker":"X"}\n'
             '{"action":"add_watchlist","ticker":"X"}\n'
             '{"action":"run_scan","ticker":"X","type":"deep|pulse"} — omit ticker to scan all\n'
+            '{"action":"best_opportunity","budget":"2000 AED"} — scan all and pick the best one\n'
             '{"action":"show_performance"}\n'
             '{"action":"answer_question","answer":"..."}\n'
             '{"action":"unknown","clarification":"..."}\n\n'
@@ -339,6 +340,7 @@ def chat_command_task(user_message: str, portfolio: dict) -> Task:
             "- 'Should I buy X?', 'Is X good?', 'What about X?' → run_scan for that ticker\n"
             "- 'Should I buy more X?' → run_scan for X (X may already be in holdings)\n"
             "- Any investment question about a specific stock → run_scan for that stock\n"
+            "- 'What should I invest in?', 'What is the best opportunity?', 'Where should I put X dirhams/dollars?' → best_opportunity\n"
             "- Micron=MU, Google=GOOGL, Meta=META, Emirates NBD=ENBD, Emaar=EMAAR\n"
             "Return ONLY valid JSON array. No markdown, no explanation."
         ),
