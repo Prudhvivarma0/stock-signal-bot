@@ -56,8 +56,8 @@ def has_holdings(portfolio: dict) -> bool:
     return bool(portfolio.get("holdings"))
 
 
-def launch_dashboard():
-    """Start Streamlit dashboard as a subprocess and open browser."""
+def launch_dashboard(open_browser: bool = False):
+    """Start Streamlit dashboard as a subprocess."""
     log.info("Launching Streamlit dashboard on port 8501...")
     proc = subprocess.Popen(
         [sys.executable, "-m", "streamlit", "run",
@@ -70,21 +70,22 @@ def launch_dashboard():
         stderr=subprocess.STDOUT,
     )
     log.info("Dashboard PID: %d — http://localhost:8501", proc.pid)
-    # Wait for Streamlit to bind then open browser
-    for _ in range(15):
-        time.sleep(1)
+    if open_browser:
+        # Wait for Streamlit to bind then open browser (first launch only)
+        for _ in range(15):
+            time.sleep(1)
+            try:
+                import urllib.request
+                urllib.request.urlopen("http://localhost:8501/_stcore/health", timeout=1)
+                break
+            except Exception:
+                continue
         try:
-            import urllib.request
-            urllib.request.urlopen("http://localhost:8501/_stcore/health", timeout=1)
-            break
+            import webbrowser
+            webbrowser.open("http://localhost:8501")
+            log.info("Browser opened at http://localhost:8501")
         except Exception:
-            continue
-    try:
-        import webbrowser
-        webbrowser.open("http://localhost:8501")
-        log.info("Browser opened at http://localhost:8501")
-    except Exception:
-        pass
+            pass
     return proc
 
 
@@ -197,8 +198,8 @@ def main():
     except Exception as exc:
         log.warning("Startup Telegram: %s", exc)
 
-    # Launch dashboard
-    dash_proc = launch_dashboard()
+    # Launch dashboard (open browser on first launch only)
+    dash_proc = launch_dashboard(open_browser=True)
 
     # Start Telegram listener (incoming commands)
     from src.telegram_listener import start_listener_thread

@@ -27,6 +27,7 @@ from src.tools.crew_tools import (
     reddit_scan, stocktwits_sentiment, google_trends, wikipedia_views,
     analyst_ratings, institutional_ownership,
     job_postings, options_flow,
+    uae_fundamentals, uae_price_data, uae_news, uae_insider_transactions,
 )
 
 log = logging.getLogger(__name__)
@@ -103,7 +104,8 @@ def fundamentals_agent() -> Agent:
         ),
         llm=_fast_llm(),
         tools=[yfinance_fundamentals, av_company_overview, av_earnings,
-               fred_macro, insider_transactions, sec_8k_alerts, sec_edgar_facts],
+               fred_macro, insider_transactions, sec_8k_alerts, sec_edgar_facts,
+               uae_fundamentals, uae_insider_transactions],
         verbose=True,
         allow_delegation=False,
     )
@@ -123,7 +125,7 @@ def news_agent() -> Agent:
             "You never cry wolf. Only flag things that genuinely change the picture."
         ),
         llm=_fast_llm(),
-        tools=[news_scan, press_releases, sec_8k_alerts],
+        tools=[news_scan, press_releases, sec_8k_alerts, uae_news],
         verbose=True,
         allow_delegation=False,
     )
@@ -163,7 +165,7 @@ def technical_agent() -> Agent:
             "You spot setups and breakdowns quickly."
         ),
         llm=_fast_llm(),
-        tools=[technical_analysis, options_flow],
+        tools=[technical_analysis, options_flow, uae_price_data],
         verbose=True,
         allow_delegation=False,
     )

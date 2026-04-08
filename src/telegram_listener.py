@@ -142,8 +142,19 @@ def _handle_scan(ticker: str | None, chat_id: str):
             _reply(f"Scanning {t}... ({i+1}/{len(tickers)})", chat_id)
             results = run_deep_scan(t, holding, portfolio)
             decision = results.get("manager_decision", "")
-            if not decision or "NO_ALERT" in decision.upper():
-                _reply(f"{t}: scan complete — no signal worth alerting on right now.", chat_id)
+            if not decision:
+                _reply(f"{t}: scan complete — manager produced no output.", chat_id)
+            elif "NO_ALERT" in decision.upper():
+                # Still send the decision text so user gets a real answer
+                summary = decision.replace("NO_ALERT", "").strip()
+                if summary and len(summary) > 20:
+                    _reply(f"{t} scan result:\n\n{summary[:1500]}", chat_id)
+                else:
+                    _reply(
+                        f"{t}: scan complete — nothing actionable right now. "
+                        f"Check /status for your current P&L.",
+                        chat_id,
+                    )
             # If there IS an alert, run_deep_scan already sent it via the normal alert pipeline
 
     except Exception as exc:

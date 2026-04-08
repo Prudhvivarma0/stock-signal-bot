@@ -233,3 +233,76 @@ def options_flow(ticker: str) -> str:
         return _j(_fn(ticker))
     except Exception as exc:
         return f"options_flow error: {exc}"
+
+
+# ── UAE / DFM / ADX ───────────────────────────────────────────────────────────
+
+@tool("uae_fundamentals")
+def uae_fundamentals(ticker: str) -> str:
+    """Fundamentals for UAE stocks listed on DFM or ADX (EODHD source).
+    Returns P/E, EPS, revenue, margins, ROE, book value, dividend yield.
+    Input: ticker symbol (e.g. EMAAR, SALIK, DIB, FAB)"""
+    try:
+        from src.tools.eodhd_tools import eodhd_fundamentals
+        # Detect exchange: try DFM first, fall back to ADX
+        result = eodhd_fundamentals(ticker, exchange="DFM")
+        if not result:
+            result = eodhd_fundamentals(ticker, exchange="ADX")
+        # Also get yfinance data with .AE suffix
+        from src.tools.yfinance_tools import yfinance_fundamentals
+        yf_data = yfinance_fundamentals(ticker)
+        return _j({"eodhd": result, "yfinance": yf_data})
+    except Exception as exc:
+        return f"uae_fundamentals error: {exc}"
+
+
+@tool("uae_price_data")
+def uae_price_data(ticker: str) -> str:
+    """Price history and technical data for UAE stocks (DFM/ADX).
+    Returns OHLCV data, 52-week high/low, recent price trend.
+    Input: ticker symbol (e.g. EMAAR, SALIK)"""
+    try:
+        from src.tools.uae_data import get_uae_history, get_uae_price
+        price = get_uae_price(ticker)
+        hist = get_uae_history(ticker, period="6mo", interval="1d")
+        rows = []
+        if not hist.empty:
+            rows = hist.tail(30).to_dict(orient="records")
+        return _j({"current_price_aed": price, "history_30d": rows})
+    except Exception as exc:
+        return f"uae_price_data error: {exc}"
+
+
+@tool("uae_news")
+def uae_news(ticker: str) -> str:
+    """News for UAE-listed stocks from Gulf News, Arabian Business, The National,
+    Khaleej Times, and UAE-specific Google News.
+    Input: ticker symbol (e.g. EMAAR, SALIK) or company name"""
+    try:
+        from src.tools.news_rss_tools import uae_company_news_rss, uae_news_rss
+        from src.tools.eodhd_tools import eodhd_news
+        articles = uae_company_news_rss(ticker)
+        eodhd_items = eodhd_news(ticker, exchange="DFM")
+        general = uae_news_rss()
+        # Filter general news for mentions of the ticker
+        t_lower = ticker.lower()
+        relevant_general = [a for a in general if t_lower in a.get("title", "").lower()]
+        all_items = articles + eodhd_items + relevant_general
+        return _j({"article_count": len(all_items), "articles": all_items[:20]})
+    except Exception as exc:
+        return f"uae_news error: {exc}"
+
+
+@tool("uae_insider_transactions")
+def uae_insider_transactions(ticker: str) -> str:
+    """Insider transactions for UAE stocks from EODHD (DFM/ADX filings).
+    Input: ticker symbol"""
+    try:
+        from src.tools.eodhd_tools import eodhd_insider_transactions
+        result = eodhd_insider_transactions(ticker, exchange="DFM")
+        if not result:
+            from src.tools.eodhd_tools import eodhd_insider_transactions as _fn
+            result = _fn(ticker, exchange="ADX")
+        return _j(result)
+    except Exception as exc:
+        return f"uae_insider_transactions error: {exc}"

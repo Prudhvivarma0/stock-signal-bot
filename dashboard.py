@@ -435,7 +435,10 @@ with tab_performance:
                 "P&L %": f"{pnl_pct:+.2f}%" if cost_n else "—",
             })
         if perf_data:
-            st.dataframe(pd.DataFrame(perf_data), use_container_width=True, hide_index=True)
+            try:
+                st.dataframe(pd.DataFrame(perf_data), use_container_width=True, hide_index=True)
+            except Exception:
+                st.table(pd.DataFrame(perf_data))
     else:
         st.info("Performance history builds up as the engine runs. Check back after the first price snapshot cycle (runs every 15 min).")
 

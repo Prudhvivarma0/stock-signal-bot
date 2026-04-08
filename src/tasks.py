@@ -4,12 +4,24 @@ from crewai import Task
 from src import agents as ag
 
 
+def _is_uae(ticker: str, holding: dict = None) -> bool:
+    """Detect UAE stock from holding exchange or known ticker list."""
+    if holding and holding.get("exchange", "").upper() in ("DFM", "ADX", "AE"):
+        return True
+    try:
+        from src.tools.uae_data import is_uae_ticker
+        return is_uae_ticker(ticker)
+    except Exception:
+        return False
+
+
 def _holding_ctx(holding: dict) -> str:
     if not holding or not holding.get("entry_price"):
         return ""
+    currency = "AED" if holding.get("currency", "USD") == "AED" else "$"
     return (
         f"Investor holds {holding.get('shares')} shares @ "
-        f"${holding.get('entry_price')} avg entry."
+        f"{currency}{holding.get('entry_price')} avg entry."
     )
 
 
@@ -18,25 +30,27 @@ def _position_question(holding: dict, ticker: str) -> str:
     if holding and holding.get("entry_price"):
         return (
             f"Investor holds {holding.get('shares')} shares of {ticker} "
-            f"@ ${holding.get('entry_price')} avg entry. "
+            f"@ {holding.get('entry_price')} avg entry. "
             f"Question: HOLD, SELL, or BUY MORE?"
         )
     return f"Investor does NOT hold {ticker}. Question: BUY or SKIP?"
 
 
 def fundamentals_task(ticker: str, holding: dict = None) -> Task:
-    exchange = holding.get("exchange", "US") if holding else "US"
-    is_uae = exchange in ("DFM", "ADX")
+    uae = _is_uae(ticker, holding)
+    exchange = (holding.get("exchange", "DFM") if holding else "DFM") if uae else "US"
     data_note = (
-        f"UAE stock on {exchange} — use EODHD for fundamentals, skip SEC tools."
-        if is_uae else
-        "Use SEC EDGAR for revenue/income trends, 8-K filings, and insider transactions."
+        f"UAE stock on {exchange} (DFM/ADX). Use uae_fundamentals tool — it fetches EODHD data. "
+        f"Also use uae_insider_transactions. Do NOT use sec_edgar_facts or sec_8k_alerts (US-only)."
+        if uae else
+        "Use sec_edgar_facts for revenue/income trends, sec_8k_alerts for filings, "
+        "insider_transactions from OpenInsider."
     )
     return Task(
         description=(
             f"Fundamental analysis of {ticker}. {_holding_ctx(holding)}\n"
-            f"Get: P/E, forward P/E, PEG, EPS growth, revenue trend, margins, FCF, "
-            f"debt/equity, ROE, institutional %, analyst targets, insider activity.\n"
+            f"Get: P/E, EPS growth, revenue trend, margins, FCF, "
+            f"debt/equity, ROE, analyst targets, insider activity.\n"
             f"{data_note}\n"
             f"Return JSON: {{fundamental_score(-1 to 1), valuation, financial_health, "
             f"insider_signal, key_metrics, flags, reasoning, signal, confidence}}"
@@ -46,12 +60,24 @@ def fundamentals_task(ticker: str, holding: dict = None) -> Task:
     )
 
 
-def news_task(ticker: str, company_name: str = "") -> Task:
+def news_task(ticker: str, company_name: str = "", holding: dict = None) -> Task:
+    uae = _is_uae(ticker, holding)
+    if uae:
+        news_note = (
+            f"UAE stock. Use uae_news tool for DFM/company-specific news from Gulf News, "
+            f"Arabian Business, The National, and UAE Google News. "
+            f"Also use news_scan for general coverage. "
+            f"Do NOT use press_releases (NASDAQ) or sec_8k_alerts (US-only)."
+        )
+    else:
+        news_note = "Use news_scan, press_releases, and sec_8k_alerts."
+
     return Task(
         description=(
             f"News intelligence for {ticker} ({company_name}).\n"
-            f"Scan RSS feeds, press releases, SEC 8-K. Score each article -1 to +1. "
-            f"Flag URGENT for: fraud, SEC investigation, lawsuit, bankruptcy, recall.\n"
+            f"{news_note}\n"
+            f"Score each article -1 to +1. "
+            f"Flag URGENT for: fraud, investigation, lawsuit, bankruptcy, recall.\n"
             f"Return JSON: {{news_score, urgent_flags, top_positive, top_negative, "
             f"sentiment_shift, reasoning}}"
         ),
@@ -76,16 +102,29 @@ def social_task(ticker: str, company_name: str = "") -> Task:
 
 
 def technical_task(ticker: str, holding: dict = None) -> Task:
+    uae = _is_uae(ticker, holding)
     entry_ctx = ""
     if holding:
-        entry_ctx = f"Entry ${holding.get('entry_price')}, stop {holding.get('stop_loss_pct', 8)}%."
+        currency = "AED" if holding.get("currency", "USD") == "AED" else "$"
+        entry_ctx = f"Entry {currency}{holding.get('entry_price')}, stop {holding.get('stop_loss_pct', 8)}%."
+
+    if uae:
+        tech_note = (
+            "UAE stock — use uae_price_data tool for OHLCV history. "
+            "Use technical_analysis tool (auto-appends .AE suffix). "
+            "Options flow not available for UAE stocks — skip options_signal."
+        )
+        extras = "No SPY/QQQ comparison needed (different market)."
+    else:
+        tech_note = "Use technical_analysis tool, options_flow for put/call ratio."
+        extras = "Compare relative strength vs SPY/QQQ."
+
     return Task(
         description=(
             f"Technical analysis of {ticker}. {entry_ctx}\n"
+            f"{tech_note}\n"
             f"Calculate: SMA20/50/200, RSI, MACD, Bollinger Bands, ATR, OBV. "
-            f"Identify trend, momentum, key support/resistance. "
-            f"Check options flow (put/call ratio, unusual activity). "
-            f"Compare relative strength vs SPY/QQQ.\n"
+            f"Identify trend, momentum, key support/resistance. {extras}\n"
             f"Return JSON: {{technical_score(-1 to 1), signal(BUY/NEUTRAL/AVOID), "
             f"trend, rsi, macd_signal, support_level, resistance_level, "
             f"stop_loss_price, options_signal, reasoning}}"

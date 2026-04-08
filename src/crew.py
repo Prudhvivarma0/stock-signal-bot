@@ -122,7 +122,7 @@ def run_deep_scan(ticker: str, holding: dict, portfolio: dict) -> dict:
             ticker, "news",
             lambda: Crew(
                 agents=[ag.news_agent()],
-                tasks=[tk.news_task(ticker, company_name)],
+                tasks=[tk.news_task(ticker, company_name, holding)],
                 process=Process.sequential, verbose=False,
             ),
             save_fn=_save_news,

@@ -158,16 +158,42 @@ def pr_newswire_rss() -> list:
 
 
 def uae_news_rss() -> list:
+    """General UAE business news feeds."""
     feeds = [
         ("https://gulfnews.com/rss/business", "gulf_news"),
         ("https://www.khaleejtimes.com/feeds/business", "khaleej_times"),
         ("https://www.thenationalnews.com/arc/outboundfeeds/rss/?outputType=xml", "the_national"),
         ("https://www.arabianbusiness.com/rss", "arabian_business"),
+        ("https://gulfbusiness.com/feed/", "gulf_business"),
     ]
     articles = []
     for url, src in feeds:
         for e in _parse_feed(url)[:5]:
             articles.append({"title": e.get("title", ""), "source": src, "age_hours": _entry_age_hours(e)})
+    return articles
+
+
+def uae_company_news_rss(ticker: str, company_name: str = "") -> list:
+    """Company-specific news for UAE stocks via Google News with DFM/Dubai context."""
+    name = company_name or ticker
+    queries = [
+        f"{name}+DFM",
+        f"{name}+Dubai+stock",
+        f"{ticker}+ADX+shares",
+        f"{name}+earnings+UAE",
+        f"{name}+dividend",
+    ]
+    articles = []
+    for q in queries:
+        entries = _parse_feed(f"https://news.google.com/rss/search?q={q}&hl=en-US&gl=AE&ceid=AE:en")
+        for e in entries[:4]:
+            articles.append({
+                "title": e.get("title", ""),
+                "source": "google_news_uae",
+                "query": q,
+                "age_hours": _entry_age_hours(e),
+                "link": e.get("link", ""),
+            })
     return articles
 
 
@@ -213,21 +239,33 @@ def sentiment_score_articles(articles: list) -> dict:
 
 def build_news_report(ticker: str, company_name: str = "") -> dict:
     """Aggregate all news sources and score sentiment."""
+    from src.tools.uae_data import is_uae_ticker
+    _is_uae = is_uae_ticker(ticker)
+
     all_articles = []
     sources_checked = []
 
-    for fn, args, name in [
+    sources = [
         (google_news_rss, (ticker, company_name), "google_news"),
-        (yahoo_finance_rss, (ticker,), "yahoo_finance"),
         (newsapi_search, (ticker, company_name), "newsapi"),
-        (seeking_alpha_rss, (ticker,), "seeking_alpha"),
-        (benzinga_rss, (), "benzinga"),
-        (business_wire_rss, (), "business_wire"),
-        (pr_newswire_rss, (), "pr_newswire"),
-        (uae_news_rss, (), "uae_news"),
         (reuters_rss, (), "reuters"),
-        (cnbc_rss, (), "cnbc"),
-    ]:
+    ]
+    if _is_uae:
+        sources += [
+            (uae_company_news_rss, (ticker, company_name), "uae_company_news"),
+            (uae_news_rss, (), "uae_news"),
+        ]
+    else:
+        sources += [
+            (yahoo_finance_rss, (ticker,), "yahoo_finance"),
+            (seeking_alpha_rss, (ticker,), "seeking_alpha"),
+            (benzinga_rss, (), "benzinga"),
+            (business_wire_rss, (), "business_wire"),
+            (pr_newswire_rss, (), "pr_newswire"),
+            (cnbc_rss, (), "cnbc"),
+        ]
+
+    for fn, args, name in sources:
         try:
             items = fn(*args)
             if items:

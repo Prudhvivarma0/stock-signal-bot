@@ -9,9 +9,18 @@ import yfinance as yf
 log = logging.getLogger(__name__)
 
 
+def _resolve(ticker: str) -> str:
+    """Auto-append .AE suffix for UAE stocks so yfinance doesn't 404."""
+    try:
+        from src.tools.uae_data import resolve_yf_ticker
+        return resolve_yf_ticker(ticker)
+    except Exception:
+        return ticker
+
+
 def yfinance_fundamentals(ticker: str) -> dict:
     try:
-        t = yf.Ticker(ticker)
+        t = yf.Ticker(_resolve(ticker))
         info = t.info or {}
         fields = [
             "shortName", "longName", "sector", "industry",
@@ -46,7 +55,7 @@ def yfinance_fundamentals(ticker: str) -> dict:
 
 def price_data(ticker: str, period: str = "2y", interval: str = "1d") -> pd.DataFrame:
     try:
-        df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=True)
+        df = yf.download(_resolve(ticker), period=period, interval=interval, progress=False, auto_adjust=True)
         df.dropna(inplace=True)
         return df
     except Exception as exc:
@@ -56,7 +65,7 @@ def price_data(ticker: str, period: str = "2y", interval: str = "1d") -> pd.Data
 
 def premarket_price(ticker: str) -> float | None:
     try:
-        info = yf.Ticker(ticker).info or {}
+        info = yf.Ticker(_resolve(ticker)).info or {}
         return info.get("preMarketPrice") or info.get("regularMarketPrice")
     except Exception as exc:
         log.error("premarket_price(%s): %s", ticker, exc)
@@ -65,7 +74,7 @@ def premarket_price(ticker: str) -> float | None:
 
 def get_latest_price(ticker: str) -> float | None:
     try:
-        info = yf.Ticker(ticker).info or {}
+        info = yf.Ticker(_resolve(ticker)).info or {}
         return (
             info.get("currentPrice")
             or info.get("regularMarketPrice")

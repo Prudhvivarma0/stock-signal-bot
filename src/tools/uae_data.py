@@ -11,6 +11,46 @@ AED_USD_RATE = 3.6725  # fixed peg
 
 UAE_EXCHANGES = ("DFM", "ADX", "AE")
 
+# Known UAE tickers for auto-detection (DFM + ADX)
+KNOWN_UAE_TICKERS = {
+    # DFM
+    "EMAAR", "SALIK", "DIB", "DFM", "DAMAC", "DEWA", "TECOM", "PARKIN",
+    "AMANAT", "GGICO", "GFH", "GFHMICRO", "SHUAA", "TAKAFUL", "UNION",
+    "ARZAN", "BPCC", "SALAMA", "AJMANBANK", "MASB",
+    # ADX
+    "ETISALAT", "EAND", "FAB", "ADCB", "ADNOCDIST", "ADNOC", "ALDAR",
+    "IHC", "TAQA", "FERTIGLOBE", "ADIB", "NBAD", "NBF", "NMDC",
+    "ALPHADHABI", "MULTIPLY", "NOURA", "GHITHA", "AGTHIA",
+}
+
+
+def is_uae_ticker(ticker: str) -> bool:
+    """Auto-detect UAE stock by known list or .AE/.DFM/.ADX suffix."""
+    t = ticker.upper().split(".")[0]  # strip any existing suffix
+    if t in KNOWN_UAE_TICKERS:
+        return True
+    tu = ticker.upper()
+    return tu.endswith(".AE") or tu.endswith(".DFM") or tu.endswith(".ADX")
+
+
+def resolve_yf_ticker(ticker: str, exchange: str = "") -> str:
+    """Return correct Yahoo Finance symbol.
+    Auto-appends .AE for known UAE stocks when exchange not provided.
+    """
+    t = ticker.upper()
+    # Already has a suffix → normalise to .AE
+    if t.endswith(".DFM") or t.endswith(".ADX"):
+        return t.split(".")[0] + ".AE"
+    if t.endswith(".AE"):
+        return t
+    # Exchange known to be UAE
+    if exchange.upper() in UAE_EXCHANGES:
+        return f"{t}.AE"
+    # Auto-detect from known list
+    if is_uae_ticker(t):
+        return f"{t}.AE"
+    return t  # US / other
+
 
 def is_uae(exchange: str) -> bool:
     return exchange.upper() in UAE_EXCHANGES
@@ -20,14 +60,7 @@ def yf_ticker(ticker: str, exchange: str) -> str:
     """Convert ticker + exchange to the correct Yahoo Finance symbol.
     DFM/ADX stocks use the .AE suffix on Yahoo Finance.
     """
-    t = ticker.upper()
-    if is_uae(exchange):
-        # Already has suffix
-        if t.endswith(".AE") or t.endswith(".DFM") or t.endswith(".ADX"):
-            base = t.split(".")[0]
-            return f"{base}.AE"
-        return f"{t}.AE"
-    return t  # US stocks as-is
+    return resolve_yf_ticker(ticker, exchange)
 
 
 def get_uae_price(ticker: str, exchange: str = "DFM") -> float | None:
