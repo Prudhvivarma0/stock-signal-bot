@@ -23,9 +23,9 @@ from crewai import Agent, LLM
 
 log = logging.getLogger(__name__)
 
-FAST_MODEL  = "groq/llama-3.1-8b-instant"       # agents 1-6, bull/bear/risk
-SMART_MODEL = "groq/llama-3.3-70b-versatile"    # manager only
-FALLBACK_MODEL = "gemini/gemini-1.5-flash"       # when Groq 429s
+FAST_MODEL  = "anthropic/claude-haiku-4-5-20251001"   # agents 1-6, bull/bear/risk
+SMART_MODEL = "anthropic/claude-sonnet-4-6"          # manager only
+FALLBACK_MODEL = "groq/llama-3.1-8b-instant"         # fallback if Anthropic unavailable
 
 # Module-level fallback flag — set to True when Groq is rate-limited
 _FALLBACK_ACTIVE = False
@@ -41,23 +41,30 @@ def set_fallback(active: bool):
         log.info("Gemini fallback deactivated — back to Groq")
 
 
-def _llm(model: str = FAST_MODEL, retries: int = 0) -> LLM:
-    """Build LLM with automatic Gemini fallback on 429."""
+def _llm(model: str = FAST_MODEL) -> LLM:
+    """Build LLM — Anthropic primary, Groq fallback."""
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
     groq_key = os.getenv("GROQ_API_KEY", "")
     gemini_key = os.getenv("GEMINI_API_KEY", "")
 
-    if model.startswith("gemini") and gemini_key:
-        return LLM(model=model, api_key=gemini_key, temperature=0.1, max_tokens=4096)
+    if model.startswith("anthropic") and anthropic_key and not _FALLBACK_ACTIVE:
+        return LLM(model=model, api_key=anthropic_key, temperature=0.1, max_tokens=4096)
 
     if model.startswith("groq") and groq_key and not _FALLBACK_ACTIVE:
         return LLM(model=model, api_key=groq_key, temperature=0.1, max_tokens=4096)
 
-    # Fallback to Gemini if Groq is rate-limited or key missing
-    if gemini_key:
-        log.warning("Groq key missing, falling back to Gemini")
-        return LLM(model=FALLBACK_MODEL, api_key=gemini_key, temperature=0.1, max_tokens=4096)
+    if model.startswith("gemini") and gemini_key:
+        return LLM(model=model, api_key=gemini_key, temperature=0.1, max_tokens=4096)
 
-    raise ValueError("No LLM API key available. Set GROQ_API_KEY or GEMINI_API_KEY in .env")
+    # Fallback chain: Groq → Gemini
+    if groq_key:
+        log.warning("Primary LLM unavailable, falling back to Groq")
+        return LLM(model="groq/llama-3.1-8b-instant", api_key=groq_key, temperature=0.1, max_tokens=4096)
+    if gemini_key:
+        log.warning("Falling back to Gemini")
+        return LLM(model="gemini/gemini-2.0-flash-lite", api_key=gemini_key, temperature=0.1, max_tokens=4096)
+
+    raise ValueError("No LLM API key available. Set ANTHROPIC_API_KEY in .env")
 
 
 def _fast_llm() -> LLM:
