@@ -211,15 +211,24 @@ def main():
     scheduler.start()
     log.info("Scheduler started.")
 
-    # Immediate deep scan on startup
-    log.info("Running immediate startup deep scan...")
+    # Immediate deep scan on startup — all stocks in parallel
+    log.info("Running startup deep scan on all stocks in parallel...")
     from src.crew import run_deep_scan
-    for h in portfolio.get("holdings", []):
-        try:
-            run_deep_scan(h["ticker"], h, portfolio)
-            time.sleep(5)
-        except Exception as exc:
-            log.error("Startup scan %s: %s", h["ticker"], exc)
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    holdings = portfolio.get("holdings", [])
+    def _startup_scan(h):
+        run_deep_scan(h["ticker"], h, portfolio)
+
+    with ThreadPoolExecutor(max_workers=max(len(holdings), 1)) as executor:
+        futures = {executor.submit(_startup_scan, h): h["ticker"] for h in holdings}
+        for future in as_completed(futures):
+            t = futures[future]
+            try:
+                future.result()
+                log.info("Startup scan complete: %s", t)
+            except Exception as exc:
+                log.error("Startup scan %s: %s", t, exc)
 
     # Keep alive forever
     log.info("System running. Dashboard: http://localhost:8501")

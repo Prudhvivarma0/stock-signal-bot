@@ -92,7 +92,7 @@ def fundamentals_agent() -> Agent:
             "Every claim cites its source."
         ),
         llm=_fast_llm(),
-        verbose=False,
+        verbose=True,
         allow_delegation=False,
     )
 
@@ -111,7 +111,7 @@ def news_agent() -> Agent:
             "You never cry wolf. Only flag things that genuinely change the picture."
         ),
         llm=_fast_llm(),
-        verbose=False,
+        verbose=True,
         allow_delegation=False,
     )
 
@@ -130,7 +130,7 @@ def social_agent() -> Agent:
             "You distinguish organic interest from pump-and-dump."
         ),
         llm=_fast_llm(),
-        verbose=False,
+        verbose=True,
         allow_delegation=False,
     )
 
@@ -149,7 +149,7 @@ def technical_agent() -> Agent:
             "You spot setups and breakdowns quickly."
         ),
         llm=_fast_llm(),
-        verbose=False,
+        verbose=True,
         allow_delegation=False,
     )
 
@@ -167,7 +167,7 @@ def analyst_institutional_agent() -> Agent:
             "You read between the lines of upgrades, downgrades, and target changes."
         ),
         llm=_fast_llm(),
-        verbose=False,
+        verbose=True,
         allow_delegation=False,
     )
 
@@ -187,7 +187,7 @@ def alternative_data_agent() -> Agent:
             "these are your bread and butter."
         ),
         llm=_fast_llm(),
-        verbose=False,
+        verbose=True,
         allow_delegation=False,
     )
 
@@ -208,7 +208,7 @@ def risk_manager_agent() -> Agent:
             "You use Kelly criterion, ATR-based stops, and portfolio heat to size positions."
         ),
         llm=_fast_llm(),
-        verbose=False,
+        verbose=True,
         allow_delegation=False,
     )
 
@@ -227,7 +227,7 @@ def bull_advocate_agent() -> Agent:
             "You argue hard but never fabricate — every claim has a source."
         ),
         llm=_fast_llm(),
-        verbose=False,
+        verbose=True,
         allow_delegation=False,
     )
 
@@ -246,7 +246,7 @@ def bear_advocate_agent() -> Agent:
             "You argue hard but never fabricate — every claim has a source."
         ),
         llm=_fast_llm(),
-        verbose=False,
+        verbose=True,
         allow_delegation=False,
     )
 
@@ -272,7 +272,7 @@ def manager_agent() -> Agent:
             "and watchlist stocks (BUY/SKIP question)."
         ),
         llm=_smart_llm(),
-        verbose=False,
+        verbose=True,
         allow_delegation=True,
     )
 
@@ -293,6 +293,6 @@ def chat_agent() -> Agent:
             "When unsure, ask for clarification."
         ),
         llm=_fast_llm(),
-        verbose=False,
+        verbose=True,
         allow_delegation=False,
     )

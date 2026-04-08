@@ -2,6 +2,7 @@
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
@@ -58,21 +59,25 @@ def loop_a_pulse():
 
 # ── Loop B: Deep research twice daily ────────────────────────────────────────
 def loop_b_deep():
-    """Deep scan cycle — one stock every 10 minutes to stay within API rate limits."""
+    """Deep scan all stocks in parallel — one thread per stock."""
     try:
         portfolio = _load_portfolio()
         tickers = _all_tickers(portfolio)
-        log.info("Starting deep scan cycle — %d tickers, 10 min apart", len(tickers))
-        for i, ticker in enumerate(tickers):
+        log.info("Starting deep scan — %d tickers in parallel", len(tickers))
+
+        def _scan(ticker):
             holding = _get_holding(portfolio, ticker)
-            try:
-                run_deep_scan(ticker, holding, portfolio)
-            except Exception as exc:
-                log.error("Deep scan %s: %s", ticker, exc)
-            # Wait 10 minutes between stocks (not after the last one)
-            if i < len(tickers) - 1:
-                log.info("Waiting 10 minutes before scanning %s...", tickers[i + 1])
-                time.sleep(600)
+            run_deep_scan(ticker, holding, portfolio)
+
+        with ThreadPoolExecutor(max_workers=len(tickers)) as executor:
+            futures = {executor.submit(_scan, t): t for t in tickers}
+            for future in as_completed(futures):
+                t = futures[future]
+                try:
+                    future.result()
+                    log.info("Deep scan complete: %s", t)
+                except Exception as exc:
+                    log.error("Deep scan %s: %s", t, exc)
     except Exception as exc:
         log.error("Loop B error: %s", exc)
 
