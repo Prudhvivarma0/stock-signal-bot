@@ -146,9 +146,11 @@ def build_scheduler(timezone: str = "Asia/Dubai") -> BackgroundScheduler:
     scheduler.add_job(loop_a_pulse, IntervalTrigger(minutes=90), id="pulse_scan",
                       max_instances=1, coalesce=True)
 
-    # Loop B — deep scan at 7AM and 7PM Dubai time
-    scheduler.add_job(loop_b_deep, CronTrigger(hour="7,19", minute=0, timezone=timezone),
-                      id="deep_scan", max_instances=1, coalesce=True)
+    # Loop B — deep scan at 10:30AM and 6:00PM Dubai time
+    scheduler.add_job(loop_b_deep, CronTrigger(hour=10, minute=30, timezone=timezone),
+                      id="deep_scan_morning", max_instances=1, coalesce=True)
+    scheduler.add_job(loop_b_deep, CronTrigger(hour=18, minute=0, timezone=timezone),
+                      id="deep_scan_evening", max_instances=1, coalesce=True)
 
     # Loop D — weekly debrief every Sunday 8AM
     scheduler.add_job(loop_d_weekly, CronTrigger(day_of_week="sun", hour=8, minute=0, timezone=timezone),
